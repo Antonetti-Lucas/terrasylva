@@ -4,6 +4,8 @@ from __future__ import annotations
 import numpy as np
 from PIL import Image
 
+from ._grid import gradient
+
 
 def save_png16(path: str, heightmap: np.ndarray) -> None:
     """16-bit greyscale PNG (Unreal, Unity, Blender displacement)."""
@@ -25,18 +27,20 @@ def save_raw16(path: str, heightmap: np.ndarray, big_endian: bool = False) -> No
     a.tofile(path)
 
 
-def normal_map(heightmap: np.ndarray, strength: float | None = None) -> np.ndarray:
+def normal_map(heightmap: np.ndarray, strength: float | None = None, *,
+               wrap: bool = False) -> np.ndarray:
     """Tangent-space normal map as uint8 RGB. ``strength`` is relief in cell units."""
     size = heightmap.shape[0]
     strength = 0.1 * size if strength is None else strength
-    gy, gx = np.gradient(heightmap.astype(np.float64) * strength)
+    gy, gx = gradient(heightmap.astype(np.float64) * strength, wrap)
     n = np.stack([-gx, -gy, np.ones_like(gx)], axis=-1)
     n /= np.linalg.norm(n, axis=-1, keepdims=True)
     return ((n * 0.5 + 0.5) * 255.0 + 0.5).astype(np.uint8)
 
 
-def save_normal_map(path: str, heightmap: np.ndarray, strength: float | None = None) -> None:
-    Image.fromarray(normal_map(heightmap, strength)).save(path)
+def save_normal_map(path: str, heightmap: np.ndarray, strength: float | None = None, *,
+                    wrap: bool = False) -> None:
+    Image.fromarray(normal_map(heightmap, strength, wrap=wrap)).save(path)
 
 
 def save_obj(path: str, heightmap: np.ndarray, *, max_resolution: int = 256,
@@ -63,7 +67,7 @@ def save_obj(path: str, heightmap: np.ndarray, *, max_resolution: int = 256,
     U, V = np.meshgrid(u, 1 - u)
 
     with open(path, "w") as f:
-        f.write("# terrainforge heightfield mesh\n")
+        f.write("# terrasylva heightfield mesh\n")
         np.savetxt(f, np.column_stack([X.ravel(), Y.ravel(), Z.ravel()]), fmt="v %.6f %.6f %.6f")
         np.savetxt(f, np.column_stack([U.ravel(), V.ravel()]), fmt="vt %.6f %.6f")
         np.savetxt(f, nrm.reshape(-1, 3), fmt="vn %.5f %.5f %.5f")

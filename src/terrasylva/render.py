@@ -4,21 +4,23 @@ from __future__ import annotations
 import numpy as np
 from PIL import Image
 
+from ._grid import gradient
 
-def slope(heightmap: np.ndarray, relief: float | None = None) -> np.ndarray:
+
+def slope(heightmap: np.ndarray, relief: float | None = None, wrap: bool = False) -> np.ndarray:
     """Slope in radians, assuming the [0, 1] range spans ``relief`` cells."""
     size = heightmap.shape[0]
     relief = 0.1 * size if relief is None else relief
-    gy, gx = np.gradient(heightmap.astype(np.float64) * relief)
+    gy, gx = gradient(heightmap.astype(np.float64) * relief, wrap)
     return np.arctan(np.hypot(gx, gy))
 
 
 def hillshade(heightmap: np.ndarray, azimuth: float = 315.0, altitude: float = 40.0,
-              relief: float | None = None) -> np.ndarray:
+              relief: float | None = None, wrap: bool = False) -> np.ndarray:
     """Lambertian hillshade in [0, 1]. Azimuth is degrees clockwise from north."""
     size = heightmap.shape[0]
     relief = 0.1 * size if relief is None else relief
-    gy, gx = np.gradient(heightmap.astype(np.float64) * relief)
+    gy, gx = gradient(heightmap.astype(np.float64) * relief, wrap)
     az = np.radians(360.0 - azimuth + 90.0)
     alt = np.radians(altitude)
     slp = np.arctan(np.hypot(gx, gy))
@@ -43,13 +45,14 @@ _RAMP = [
 
 def colorize(heightmap: np.ndarray, rivers: np.ndarray | None = None,
              sea_level: float | None = None,
-             lakes: np.ndarray | None = None) -> np.ndarray:
+             lakes: np.ndarray | None = None, relief: float | None = None,
+             wrap: bool = False) -> np.ndarray:
     """Hypsometric colouring with hillshade, as uint8 RGB. Optional river/lake overlays."""
     h = np.clip(heightmap, 0.0, 1.0)
     xs = np.array([s[0] for s in _RAMP])
     cols = np.array([s[1] for s in _RAMP], dtype=np.float64)
     rgb = np.stack([np.interp(h, xs, cols[:, c]) for c in range(3)], axis=-1)
-    shade = hillshade(heightmap)
+    shade = hillshade(heightmap, relief=relief, wrap=wrap)
     rgb = rgb * (0.35 + 0.75 * shade[..., None])
     if lakes is not None:
         rgb[lakes] = (45, 100, 180)  # flat water surface, so no hillshade
@@ -59,12 +62,13 @@ def colorize(heightmap: np.ndarray, rivers: np.ndarray | None = None,
 
 
 def save_preview(path: str, heightmap: np.ndarray, rivers: np.ndarray | None = None,
-                 mode: str = "color", lakes: np.ndarray | None = None) -> None:
+                 mode: str = "color", lakes: np.ndarray | None = None,
+                 relief: float | None = None, wrap: bool = False) -> None:
     """Write a PNG preview. ``mode`` is ``color``, ``hillshade`` or ``height``."""
     if mode == "color":
-        img = Image.fromarray(colorize(heightmap, rivers, lakes=lakes))
+        img = Image.fromarray(colorize(heightmap, rivers, lakes=lakes, relief=relief, wrap=wrap))
     elif mode == "hillshade":
-        img = Image.fromarray((hillshade(heightmap) * 255).astype(np.uint8))
+        img = Image.fromarray((hillshade(heightmap, relief=relief, wrap=wrap) * 255).astype(np.uint8))
     elif mode == "height":
         img = Image.fromarray((np.clip(heightmap, 0, 1) * 255).astype(np.uint8))
     else:

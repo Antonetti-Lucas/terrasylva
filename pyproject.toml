@@ -3,7 +3,7 @@ requires = ["setuptools>=68"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "terrainforge"
+name = "terrasylva"
 version = "0.1.0"
 description = "Procedural terrain generation with hydraulic/thermal erosion and river extraction."
 readme = "README.md"
@@ -15,7 +15,7 @@ dependencies = ["numpy>=1.24", "numba>=0.58", "pillow>=10.0"]
 dev = ["pytest>=7", "matplotlib>=3.7"]
 
 [project.scripts]
-terrainforge = "terrainforge.cli:main"
+terrasylva = "terrasylva.cli:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]

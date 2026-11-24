@@ -11,6 +11,8 @@ from dataclasses import dataclass
 import numpy as np
 from numba import njit
 
+from ._grid import as_square
+
 _OX = np.array([-1, 0, 1, -1, 1, -1, 0, 1], dtype=np.int64)
 _OY = np.array([-1, -1, -1, 0, 0, 1, 1, 1], dtype=np.int64)
 _DIST = np.array([1.41421356, 1.0, 1.41421356, 1.0, 1.0, 1.41421356, 1.0, 1.41421356])
@@ -24,13 +26,21 @@ class Lakes:
     depth: np.ndarray   # float32 water depth in heightmap units, 0 outside lakes
 
 
-def _as_square(heightmap: np.ndarray) -> np.ndarray:
-    h = np.ascontiguousarray(heightmap, dtype=np.float64)
-    if h.ndim != 2 or h.shape[0] != h.shape[1]:
-        raise ValueError("heightmap must be a square 2D array")
-    if h.size == 0 or not np.isfinite(h).all():
-        raise ValueError("heightmap must be non-empty and finite")
-    return h
+def _outlet_mask(h, outlets, wrap):
+    """Cells where water leaves: ``outlets``, plus the border unless wrapping."""
+    n = h.shape[0]
+    mask = np.zeros((n, n), dtype=np.bool_)
+    if outlets is not None:
+        outlets = np.asarray(outlets)
+        if outlets.shape != h.shape or outlets.dtype != bool:
+            raise ValueError("outlets must be a bool array with the heightmap's shape")
+        mask |= outlets
+    if not wrap:
+        mask[0, :] = mask[-1, :] = mask[:, 0] = mask[:, -1] = True
+    elif not mask.any():
+        # water has to end somewhere: use the lowest point of the world
+        mask.ravel()[h.argmin()] = True
+    return mask
 
 
 @njit(cache=True)
@@ -44,15 +54,15 @@ def _tie_break(idx):
 
 
 @njit(cache=True)
-def _flood(h, ox, oy):
-    """Flood inwards from the border, always visiting the lowest reachable cell.
+def _flood(h, outlets, wrap, ox, oy):
+    """Flood upwards from the outlets, always visiting the lowest reachable cell.
 
     Cells are keyed by their *original* height, so once a spill point is passed
     the search dives to the basin floor and climbs back out along its valleys.
     The running maximum of visited heights is the water level.
 
     Returns (filled, parent, order): water level per cell, the neighbour each
-    cell was reached from (-1 on the border), and the visiting order.
+    cell was reached from (-1 at outlets), and the visiting order.
     """
     n = h.shape[0]
     filled = h.copy()
@@ -61,9 +71,9 @@ def _flood(h, ox, oy):
     closed = np.zeros((n, n), dtype=np.bool_)
     heap = [(0.0, np.int64(0), np.int64(0))]
     heapq.heappop(heap)
-    for i in range(n):
-        for (y, x) in ((0, i), (n - 1, i), (i, 0), (i, n - 1)):
-            if not closed[y, x]:
+    for y in range(n):
+        for x in range(n):
+            if outlets[y, x]:
                 closed[y, x] = True
                 idx = np.int64(y * n + x)
                 heapq.heappush(heap, (h[y, x], _tie_break(idx), idx))
@@ -80,6 +90,9 @@ def _flood(h, ox, oy):
         for k in range(8):
             ny = y + oy[k]
             nx = x + ox[k]
+            if wrap:
+                ny %= n
+                nx %= n
             if 0 <= ny < n and 0 <= nx < n and not closed[ny, nx]:
                 closed[ny, nx] = True
                 nidx = np.int64(ny * n + nx)
@@ -89,8 +102,8 @@ def _flood(h, ox, oy):
 
 
 @njit(cache=True)
-def _receivers(h, filled, parent, ox, oy, dist):
-    """Downstream cell per cell, -1 on the border.
+def _receivers(h, filled, parent, outlets, ox, oy, dist):
+    """Downstream cell per cell, -1 at outlets.
 
     Dry cells follow steepest descent on the water surface. Submerged and flat
     cells follow the flood tree to their spill point. Every step either lowers
@@ -98,16 +111,19 @@ def _receivers(h, filled, parent, ox, oy, dist):
     """
     n = h.shape[0]
     recv = parent.copy()
-    for y in range(1, n - 1):
-        for x in range(1, n - 1):
-            if filled[y, x] > h[y, x]:
+    for y in range(n):
+        for x in range(n):
+            if outlets[y, x] or filled[y, x] > h[y, x]:
                 continue
             best = 0.0
             for k in range(8):
-                s = (filled[y, x] - filled[y + oy[k], x + ox[k]]) / dist[k]
+                # without wrapping the border is all outlets, so % is a no-op
+                ny = (y + oy[k]) % n
+                nx = (x + ox[k]) % n
+                s = (filled[y, x] - filled[ny, nx]) / dist[k]
                 if s > best:
                     best = s
-                    recv[y * n + x] = (y + oy[k]) * n + (x + ox[k])
+                    recv[y * n + x] = ny * n + nx
     return recv
 
 
@@ -123,7 +139,7 @@ def _accumulate(recv, order, rain):
 
 
 @njit(cache=True)
-def _keep_lakes(depth, filled, min_depth, min_area, ox, oy):
+def _keep_lakes(depth, filled, min_depth, min_area, wrap, ox, oy):
     """8-connected submerged regions, minus those too shallow or too small."""
     n = depth.shape[0]
     mask = np.zeros((n, n), dtype=np.bool_)
@@ -148,6 +164,9 @@ def _keep_lakes(depth, filled, min_depth, min_area, ox, oy):
             for k in range(8):
                 ny = y + oy[k]
                 nx = x + ox[k]
+                if wrap:
+                    ny %= n
+                    nx %= n
                 if (0 <= ny < n and 0 <= nx < n and not seen[ny, nx]
                         and depth[ny, nx] > 0.0 and filled[ny, nx] == filled[y, x]):
                     seen[ny, nx] = True
@@ -159,60 +178,69 @@ def _keep_lakes(depth, filled, min_depth, min_area, ox, oy):
     return mask
 
 
-def fill_depressions(heightmap: np.ndarray) -> np.ndarray:
+def fill_depressions(heightmap: np.ndarray, *, outlets: np.ndarray | None = None,
+                     wrap: bool = False) -> np.ndarray:
     """Heightmap with every closed basin raised to its spill level (float64)."""
-    return _flood(_as_square(heightmap), _OX, _OY)[0]
+    h = as_square(heightmap)
+    return _flood(h, _outlet_mask(h, outlets, wrap), bool(wrap), _OX, _OY)[0]
 
 
 def detect_lakes(heightmap: np.ndarray, *, min_depth: float = 0.005,
-                 min_area: int | None = None) -> Lakes:
+                 min_area: int | None = None, outlets: np.ndarray | None = None,
+                 wrap: bool = False) -> Lakes:
     """Find lakes: closed basins filled to the level at which they spill.
 
     Args:
-        heightmap: square height array. Border cells are outlets, so a basin
-            open to the border never holds water.
+        heightmap: square height array.
         min_depth: drop lakes whose deepest point is below this (heightmap units).
         min_area: drop lakes with fewer cells; default 0.02% of the map.
+        outlets, wrap: see :func:`flow_accumulation`. A basin open to an outlet
+            never holds water.
     """
     if min_depth < 0:
         raise ValueError("min_depth must be >= 0")
     if min_area is not None and min_area < 0:
         raise ValueError("min_area must be >= 0")
-    h = _as_square(heightmap)
+    h = as_square(heightmap)
     area = max(int(h.size * 0.0002), 4) if min_area is None else int(min_area)
-    filled = _flood(h, _OX, _OY)[0]
+    filled = fill_depressions(h, outlets=outlets, wrap=wrap)
     depth = filled - h
-    mask = _keep_lakes(depth, filled, float(min_depth), area, _OX, _OY)
+    mask = _keep_lakes(depth, filled, float(min_depth), area, bool(wrap), _OX, _OY)
     return Lakes(mask=mask, depth=np.where(mask, depth, 0.0).astype(np.float32))
 
 
-def flow_accumulation(heightmap: np.ndarray, rainfall: np.ndarray | float = 1.0) -> np.ndarray:
+def flow_accumulation(heightmap: np.ndarray, rainfall: np.ndarray | float = 1.0, *,
+                      outlets: np.ndarray | None = None, wrap: bool = False) -> np.ndarray:
     """Number of upstream cells (weighted by rainfall) draining through each cell.
 
-    Border cells are treated as outlets to the sea. Flow entering a closed basin
+    Water leaves at the bool mask ``outlets`` (e.g. an ocean) and, unless ``wrap``,
+    at the border. A looping world without outlets drains to its lowest cell.
+    Flow entering a closed basin
     follows the submerged valley floor to the basin's spill point, so rivers
-    always reach the border instead of dying in sinks.
+    always reach an outlet instead of dying in sinks.
     """
-    h = _as_square(heightmap)
+    h = as_square(heightmap)
     rain = np.broadcast_to(np.asarray(rainfall, dtype=np.float64), h.shape).copy()
-    filled, parent, order = _flood(h, _OX, _OY)
-    recv = _receivers(h, filled, parent, _OX, _OY, _DIST)
+    out = _outlet_mask(h, outlets, wrap)
+    filled, parent, order = _flood(h, out, bool(wrap), _OX, _OY)
+    recv = _receivers(h, filled, parent, out, _OX, _OY, _DIST)
     return _accumulate(recv, order, rain).reshape(h.shape).astype(np.float32)
 
 
 def river_mask(accumulation: np.ndarray, threshold: float | None = None,
-               lakes: np.ndarray | None = None) -> np.ndarray:
+               lakes: np.ndarray | None = None, *, wrap: bool = False) -> np.ndarray:
     """Boolean mask of cells whose drainage area exceeds ``threshold``.
 
     Default threshold is 0.4% of the cell count, which gives a handful of
     major rivers plus tributaries on a typical map. The 1-cell border (the
-    sea outlet) is never marked. Cells in the optional ``lakes`` mask are left
+    sea outlet) is never marked unless ``wrap``. Cells in the optional ``lakes`` mask are left
     out, so rivers stop at the shore and resume at the outlet.
     """
     if threshold is None:
         threshold = max(accumulation.size * 0.004, 2.0)
     mask = accumulation >= threshold
-    mask[0, :] = mask[-1, :] = mask[:, 0] = mask[:, -1] = False
+    if not wrap:
+        mask[0, :] = mask[-1, :] = mask[:, 0] = mask[:, -1] = False
     if lakes is not None:
         mask &= ~lakes
     return mask
@@ -220,7 +248,7 @@ def river_mask(accumulation: np.ndarray, threshold: float | None = None,
 
 def carve_rivers(heightmap: np.ndarray, accumulation: np.ndarray, *,
                  depth: float = 0.02, threshold: float | None = None,
-                 lakes: np.ndarray | None = None) -> np.ndarray:
+                 lakes: np.ndarray | None = None, wrap: bool = False) -> np.ndarray:
     """Lower the terrain along rivers, deeper where flow is larger.
 
     ``depth`` is the carve depth for the largest river, in heightmap units.
@@ -232,8 +260,12 @@ def carve_rivers(heightmap: np.ndarray, accumulation: np.ndarray, *,
     strength = np.where(accumulation >= thr, strength, 0.0).astype(np.float32)
     # soften so valleys, not 1-px slits, are produced
     k = np.array([1, 4, 6, 4, 1], dtype=np.float32) / 16.0
+    if wrap:
+        strength = np.pad(strength, 2, mode="wrap")
     for axis in (0, 1):
         strength = np.apply_along_axis(lambda v: np.convolve(v, k, mode="same"), axis, strength)
+    if wrap:
+        strength = strength[2:-2, 2:-2]
     if lakes is not None:
         strength = np.where(lakes, 0.0, strength)
     return (heightmap - depth * strength).astype(np.float32)

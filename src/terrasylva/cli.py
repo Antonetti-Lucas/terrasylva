@@ -6,7 +6,8 @@ import os
 import time
 
 from . import export, render
-from .world import (Continents, Hydraulic, Noise, Ocean, Pipeline, Rivers, Thermal,
+from .biomes import Biomes, biome_legend, default_biome_table
+from .world import (Climate, Continents, Hydraulic, Noise, Ocean, Pipeline, Rivers, Thermal,
                     World, load_recipe, save_recipe)
 
 
@@ -31,6 +32,8 @@ def _build_parser() -> argparse.ArgumentParser:
     g.add_argument("--continents", type=float, default=2.0,
                    help="continent frequency: 2 = a few large ones, 5 = archipelago")
     g.add_argument("--cell-size", type=float, default=1.0, help="metres per cell")
+    g.add_argument("--biomes", action="store_true",
+                   help="add climate and biomes (temperature, rainfall, biome and splat maps)")
     r = sub.add_parser("run", help="generate from a JSON recipe")
     r.add_argument("recipe")
     for q in (g, r):
@@ -39,7 +42,17 @@ def _build_parser() -> argparse.ArgumentParser:
     return p
 
 
-def _export(world: World, out_dir: str, obj_resolution: int) -> None:
+def _biome_table(pipeline: Pipeline | None, world: World):
+    """The table that made the world's ``biome`` layer, or None if it can't be told."""
+    for step in (pipeline.steps if pipeline else []):
+        if isinstance(step, Biomes):
+            return step.table
+    table = default_biome_table()
+    return table if world["biome_weights"].shape[-1] == len(table) else None
+
+
+def _export(world: World, out_dir: str, obj_resolution: int,
+            pipeline: Pipeline | None = None) -> None:
     os.makedirs(out_dir, exist_ok=True)
     out = lambda name: os.path.join(out_dir, name)  # noqa: E731
     h = world["height"]
@@ -55,6 +68,21 @@ def _export(world: World, out_dir: str, obj_resolution: int) -> None:
                         lake_depth=world.layers.get("lake_depth"), **masks, **look)
     if "base" in world:
         render.save_preview(out("preview_base.png"), world["base"], **look)
+    for kind in ("temperature", "rainfall"):
+        if kind in world:
+            render.save_layer_preview(out(f"preview_{kind}.png"), world[kind], kind, h,
+                                      ocean=world.layers.get("ocean"), **look)
+    if "biome" in world:
+        export.save_biome_map(out("biomes.png"), world["biome"])
+        if "splat" in world:
+            export.save_splat_map(out("splat.png"), world["splat"])
+        table = _biome_table(pipeline, world) if "biome_weights" in world else None
+        if table is not None:
+            export.save_biome_legend(out("biomes.json"), biome_legend(table))
+            render.save_preview(out("preview_biomes.png"), h, sea_level=world.sea_level,
+                                lake_depth=world.layers.get("lake_depth"), **masks, **look,
+                                biome=world["biome"], biome_colors=[b.color for b in table],
+                                biome_weights=world["biome_weights"])
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -74,12 +102,16 @@ def main(argv: list[str] | None = None) -> int:
             steps.append(Hydraulic(drops=args.drops))
         if args.land is not None:
             steps.append(Ocean(land=args.land))
+        if args.biomes:
+            steps.append(Climate())
         steps.append(Rivers(carve=not args.no_carve, threshold=args.river_threshold))
+        if args.biomes:
+            steps.append(Biomes())
         pipeline = Pipeline(steps)
     t0 = time.perf_counter()
     result = pipeline.run(world)
     dt = time.perf_counter() - t0
-    _export(result, args.out, args.obj_resolution)
+    _export(result, args.out, args.obj_resolution, pipeline)
     save_recipe(os.path.join(args.out, "recipe.json"), world, pipeline)
     print(f"generated {world.size}x{world.size} (seed {world.seed}) in {dt:.2f}s -> {args.out}/")
     return 0

@@ -1,6 +1,8 @@
 """Export heightmaps and meshes to formats game engines understand."""
 from __future__ import annotations
 
+import json
+
 import numpy as np
 from PIL import Image
 
@@ -104,3 +106,27 @@ def save_obj(path: str, heightmap: np.ndarray, *, max_resolution: int = 256,
         tris = np.concatenate([np.column_stack([a, c, b]), np.column_stack([b, c, d])])
         faces = np.repeat(tris, 3, axis=1)  # v/vt/vn share an index
         np.savetxt(f, faces, fmt="f %d/%d/%d %d/%d/%d %d/%d/%d")
+
+
+def save_biome_map(path: str, biome: np.ndarray) -> None:
+    """8-bit greyscale PNG whose pixel values are indices into the biome table."""
+    biome = np.asarray(biome)
+    if biome.dtype != np.uint8:
+        raise ValueError("biome must be a uint8 index map")
+    Image.fromarray(biome).save(path)
+
+
+def save_splat_map(path: str, splat: np.ndarray) -> None:
+    """RGBA PNG of ground texture weights: R rock, G grass, B sand, A snow."""
+    splat = np.asarray(splat)
+    if splat.dtype != np.uint8 or splat.ndim != 3 or splat.shape[2] != 4:
+        raise ValueError("splat must be a uint8 array of shape (size, size, 4)")
+    Image.fromarray(splat).save(path)
+
+
+def save_biome_legend(path: str, legend: list[dict]) -> None:
+    """Write ``biomes.json``: the table behind the indices in the biome map."""
+    with open(path, "w", encoding="utf-8") as f:
+        json.dump({"biomes": legend, "splat_channels": ["rock", "grass", "sand", "snow"]},
+                  f, indent=2)
+        f.write("\n")

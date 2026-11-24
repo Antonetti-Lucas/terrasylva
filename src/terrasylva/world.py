@@ -15,6 +15,8 @@ from typing import Callable, Iterable
 
 import numpy as np
 
+from .biomes import Biomes
+from .climate import Climate
 from .erosion import hydraulic_erosion, thermal_erosion
 from .hydrology import (carve_rivers, detect_lakes, flow_accumulation,
                         ocean_mask, river_mask)
@@ -218,6 +220,11 @@ class Rivers:
     Optionally carves ``height``, which is then clipped to [0, 1]. Water drains
     to the bool layer ``ocean`` if the world has one. ``threshold`` defaults to
     0.4% of the land cells.
+
+    If the world has a ``rainfall`` layer (see :class:`Climate`), ``flow`` counts
+    rain instead of cells, so dry regions get fewer rivers. Rainfall averages 1
+    over land, so the default threshold still means about the same. The layer is
+    read as it is: after removing :class:`Climate` from a pipeline, delete it too.
     """
 
     carve: bool = True
@@ -226,12 +233,19 @@ class Rivers:
 
     def __call__(self, world: World) -> None:
         ocean = world.layers.get("ocean")
+        rain = world.layers.get("rainfall")
+        if rain is None:
+            rain = 1.0
+        else:
+            rain = np.asarray(rain, dtype=np.float64)
+            if not (np.isfinite(rain).all() and (rain >= 0).all()):
+                raise ValueError("rainfall must be finite and >= 0")
         kw = dict(outlets=ocean, wrap=world.wrap)
         land = world.size ** 2 if ocean is None else int((~ocean).sum())
         threshold = max(0.004 * land, 2.0) if self.threshold is None else self.threshold
         before = h = np.clip(world["height"], 0.0, 1.0)
         if self.carve:
-            acc = flow_accumulation(h, **kw)
+            acc = flow_accumulation(h, rain, **kw)
             still = detect_lakes(h, **kw).mask
             if ocean is not None:
                 still = still | ocean
@@ -240,7 +254,7 @@ class Rivers:
             if world.sea_level is not None:
                 # don't dig river beds below the sea they flow into
                 h = np.maximum(h, np.minimum(before, world.sea_level)).astype(np.float32)
-        acc = flow_accumulation(h, **kw)
+        acc = flow_accumulation(h, rain, **kw)
         lakes = detect_lakes(h, **kw)
         still = lakes.mask if ocean is None else lakes.mask | ocean
         world["height"] = h.astype(np.float32)
@@ -286,11 +300,12 @@ class Pipeline:
 
 
 STEPS: dict[str, type] = {c.__name__: c for c in (Noise, Continents, Thermal, Hydraulic,
-                                                Ocean, Rivers)}
+                                                Ocean, Climate, Rivers, Biomes)}
 
 
 def default_pipeline() -> Pipeline:
-    return Pipeline([Noise(), Continents(), Thermal(), Hydraulic(), Ocean(), Rivers()])
+    return Pipeline([Noise(), Continents(), Thermal(), Hydraulic(), Ocean(), Climate(),
+                     Rivers(), Biomes()])
 
 
 def save_recipe(path: str, world: World, pipeline: Pipeline) -> None:

@@ -209,6 +209,30 @@ def detect_lakes(heightmap: np.ndarray, *, min_depth: float = 0.005,
     return Lakes(mask=mask, depth=np.where(mask, depth, 0.0).astype(np.float32))
 
 
+def ocean_mask(heightmap: np.ndarray, sea_level: float, *, min_area: float = 0.01,
+               wrap: bool = False) -> np.ndarray:
+    """Open water: connected cells below ``sea_level`` covering enough area.
+
+    ``min_area`` is a fraction of the map. Smaller basins are left out, so they
+    can become lakes. If none is large enough, the largest one is the ocean.
+    """
+    if not np.isfinite(sea_level):
+        raise ValueError("sea_level must be finite")
+    if not 0 <= min_area <= 1:
+        raise ValueError("min_area must be in [0, 1]")
+    h = as_square(heightmap)
+    depth = np.maximum(sea_level - h, 0.0)
+    if not depth.any():
+        return np.zeros(h.shape, dtype=bool)
+    same = np.zeros_like(h)
+    cells = max(int(min_area * h.size), 1)
+    while True:
+        mask = _keep_lakes(depth, same, 0.0, cells, bool(wrap), _OX, _OY)
+        if mask.any():
+            return mask
+        cells = max(int(cells * 0.9), 1)
+
+
 def flow_accumulation(heightmap: np.ndarray, rainfall: np.ndarray | float = 1.0, *,
                       outlets: np.ndarray | None = None, wrap: bool = False) -> np.ndarray:
     """Number of upstream cells (weighted by rainfall) draining through each cell.

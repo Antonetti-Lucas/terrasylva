@@ -293,3 +293,129 @@ def test_generate_wrap_has_no_seam():
     t = ts.generate(128, seed=3, wrap=True, erosion_drops=6000)
     assert seam_ratio(t.heightmap) < 1.6
     assert seam_ratio(ts.generate(128, seed=3, erosion_drops=6000).heightmap) > 5
+
+
+# ---------------------------------------------------------------- ocean
+OCEAN_STEPS = [ts.Noise(), ts.Continents(), ts.Thermal(), ts.Hydraulic(drops=1500),
+               ts.Ocean(land=0.6), ts.Rivers(threshold=20)]
+
+
+@pytest.fixture(scope="module", params=[False, True], ids=["bordered", "looping"])
+def sea(request):
+    return ts.Pipeline(OCEAN_STEPS).run(ts.World(size=96, seed=3, wrap=request.param))
+
+
+def test_ocean_layers_agree(sea):
+    h, ocean = sea["height"], sea["ocean"]
+    assert (h[ocean] < sea.sea_level).all()
+    assert np.allclose(sea["ocean_depth"][ocean], sea.sea_level - h[ocean], atol=1e-6)
+    assert (sea["ocean_depth"][~ocean] == 0).all()
+    assert not (ocean & sea["lakes"]).any() and not (ocean & sea["rivers"]).any()
+
+
+def test_land_fraction_is_met(sea):
+    assert 0.6 - 1e-3 <= (~sea["ocean"]).mean() < 0.7
+    # everything that isn't land or ocean is an enclosed basin
+    assert (sea["height"] < sea.sea_level).mean() == pytest.approx(0.4, abs=0.01)
+
+
+def test_all_rain_reaches_ocean_or_border(sea):
+    out = hy._outlet_mask(sea["height"], sea["ocean"], sea.wrap)
+    assert float(sea["flow"][out].sum()) == pytest.approx(sea.size ** 2, rel=1e-5)
+
+
+def test_carving_does_not_push_land_below_the_sea():
+    p = ts.Pipeline(OCEAN_STEPS[:-1])
+    w = p.run(ts.World(size=96, seed=3, wrap=True))
+    carved = ts.Pipeline([ts.Rivers(threshold=10)]).run(w)
+    was_land = w["height"] >= np.float32(w.sea_level)
+    assert (carved["height"] < w["height"]).any()
+    assert (carved["height"][was_land] >= np.float32(w.sea_level)).all()
+
+
+def test_ocean_mask_separates_inland_basins_and_joins_across_the_seam():
+    h = np.full((40, 40), 0.8)
+    h[:, :6] = h[:, -6:] = 0.1       # open water on both sides of the seam
+    h[18:21, 18:21] = 0.1            # small inland basin
+    looped = ts.ocean_mask(h, 0.5, min_area=0.25, wrap=True)
+    assert looped.sum() == 480 and not looped[19, 19]
+    assert ts.ocean_mask(h, 0.5, min_area=0.0, wrap=True)[19, 19]
+    # unconnected halves: neither reaches min_area, so the largest one remains
+    h[:, 0] = 0.8
+    assert ts.ocean_mask(h, 0.5, min_area=0.5).sum() == 240
+    assert not ts.ocean_mask(h, 0.0).any()
+
+
+def test_enclosed_basin_below_sea_becomes_a_lake():
+    h = np.full((64, 64), 0.8, dtype=np.float32)
+    h[:, :16] = 0.1
+    h[30:36, 40:46] = 0.2            # below sea level but enclosed
+    w = ts.World(size=64, wrap=True, layers={"height": h})
+    w = ts.Pipeline([ts.Ocean(level=0.5), ts.Rivers(carve=False)]).run(w)
+    assert w["lakes"][30:36, 40:46].all() and not w["ocean"][30:36, 40:46].any()
+    assert w.sea_level == 0.5
+
+
+def test_continents_loop_and_change_with_seed():
+    p = ts.Pipeline([ts.Noise(), ts.Continents(scale=3)])
+    a = p.run(ts.World(size=96, seed=1, wrap=True))
+    b = p.run(ts.World(size=96, seed=2, wrap=True))
+    assert seam_ratio(a["height"]) < 1.6 and seam_ratio(a["continents"]) < 1.6
+    assert not np.array_equal(a["continents"], b["continents"])
+    assert a["height"].min() == 0 and a["height"].max() == 1
+
+
+@pytest.mark.parametrize("step", [ts.Ocean(land=0), ts.Ocean(land=1.0), ts.Ocean(min_area=2),
+                                  ts.Ocean(level=float("nan")), ts.Continents(strength=2)])
+def test_ocean_and_continents_validate(step):
+    with pytest.raises(ValueError):
+        ts.Pipeline([ts.Noise(), step]).run(small())
+
+
+def test_generate_with_and_without_land():
+    t = ts.generate(64, seed=1, erosion_drops=500, land=0.5, wrap=True)
+    assert t.ocean.any() and 0 < t.sea_level < 1
+    t = ts.generate(64, seed=1, erosion_drops=500)
+    assert t.ocean is None and t.sea_level is None
+
+
+# ---------------------------------------------------- previews and export
+def is_blue(rgb):
+    rgb = rgb.astype(int)
+    return (rgb[..., 2] > rgb[..., 0] + 20) & (rgb[..., 2] > rgb[..., 1])
+
+
+def test_only_water_is_blue(sea):
+    img = ts.colorize(sea["height"], None, sea.sea_level, sea["lakes"], sea.relief, sea.wrap,
+                      ocean=sea["ocean"], lake_depth=sea["lake_depth"])
+    water = sea["ocean"] | sea["lakes"]
+    assert np.array_equal(is_blue(img), water)
+    assert not is_blue(ts.colorize(sea["height"])).any()
+
+
+def test_sea_level_alone_floods_low_ground():
+    h = ts.fbm(48, seed=1)
+    assert np.array_equal(is_blue(ts.colorize(h, sea_level=0.4)), h < 0.4)
+
+
+def test_water_map_values(sea):
+    m = ts.water_map(sea["height"].shape, **{k: sea[k] for k in ("ocean", "lakes", "rivers")})
+    assert m.dtype == np.uint8
+    for value, layer in ((255, "ocean"), (170, "lakes"), (85, "rivers")):
+        assert np.array_equal(m == value, sea[layer])
+
+
+@pytest.mark.parametrize("size, res", [(32, 32), (64, 16), (48, 20)])
+def test_wrapped_obj_tiles_meet_exactly(tmp_path, size, res):
+    path = str(tmp_path / "t.obj")
+    h = ts.fbm(size, seed=2, wrap=True)
+    ts.save_obj(path, h, max_resolution=res, wrap=True)
+    rows = [l.split() for l in open(path)]
+    read = lambda tag: np.array([r[1:] for r in rows if r[0] == tag], dtype=float)  # noqa: E731
+    v, vn = read("v"), read("vn")
+    n = int(round(np.sqrt(len(v))))
+    assert n <= res + 1
+    v, vn = v.reshape(n, n, 3), vn.reshape(n, n, 3)
+    for a in (v[..., 1], vn[..., 0], vn[..., 1], vn[..., 2]):
+        assert np.array_equal(a[:, 0], a[:, -1]) and np.array_equal(a[0], a[-1])
+    assert v[..., 0].min() == 0 and v[..., 0].max() == 1

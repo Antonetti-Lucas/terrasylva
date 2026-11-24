@@ -4,7 +4,7 @@ A step is any callable taking a :class:`World` and updating its layers. Use the
 built-in ones, plain functions, or a mix::
 
     world = World(size=512, seed=42, wrap=True)
-    world = Pipeline([Noise(), Thermal(), Hydraulic(), Rivers()]).run(world)
+    world = Pipeline([Noise(), Continents(), Hydraulic(), Ocean(), Rivers()]).run(world)
 """
 from __future__ import annotations
 
@@ -16,7 +16,8 @@ from typing import Callable, Iterable
 import numpy as np
 
 from .erosion import hydraulic_erosion, thermal_erosion
-from .hydrology import carve_rivers, detect_lakes, flow_accumulation, river_mask
+from .hydrology import (carve_rivers, detect_lakes, flow_accumulation,
+                        ocean_mask, river_mask)
 from .noise import fbm, normalize
 
 
@@ -31,6 +32,7 @@ class World:
         height_range: metres represented by heights 0 and 1. Defaults to a
             relief of a tenth of the world's width.
         wrap: the world loops in both directions.
+        sea_level: height of the sea surface, or None. Set by :class:`Ocean`.
         layers: arrays by name, e.g. ``"height"`` (float32, nominally [0, 1]).
     """
 
@@ -39,6 +41,7 @@ class World:
     cell_size: float = 1.0
     height_range: tuple[float, float] | None = None
     wrap: bool = False
+    sea_level: float | None = None
     layers: dict[str, np.ndarray] = field(default_factory=dict)
 
     def __post_init__(self):
@@ -120,6 +123,61 @@ class Noise:
 
 
 @dataclass(frozen=True)
+class Continents:
+    """Reshape ``height`` into continents and sea basins.
+
+    ``scale`` sets how many: 2 gives a few large continents, 5 an archipelago.
+    ``strength`` is how much of the height range the continents take up.
+    Mountains fade out towards the sea floor. Creates ``continents``.
+    """
+
+    scale: float = 2.0
+    strength: float = 0.55
+    warp: float = 0.4
+    name: str = "continents"
+
+    def __call__(self, world: World) -> None:
+        if not 0 <= self.strength <= 1:
+            raise ValueError("strength must be in [0, 1]")
+        c = fbm(world.size, seed=world.seed_for(self.name), scale=self.scale, octaves=4,
+                warp=self.warp, warp_scale=1.0, wrap=world.wrap)
+        t = np.clip((c - 0.3) / 0.4, 0.0, 1.0)
+        inland = t * t * (3 - 2 * t)
+        detail = world["height"] * (0.25 + 0.75 * inland)
+        world["continents"] = c
+        world["height"] = normalize(self.strength * c + (1 - self.strength) * detail)
+
+
+@dataclass(frozen=True)
+class Ocean:
+    """Set the sea level and create ``ocean`` and ``ocean_depth``.
+
+    ``land`` is the fraction of cells above the sea. Basins that lie below sea
+    level but aren't connected to open water stay out of the ocean, so total
+    land is slightly higher. ``level`` sets the height directly instead.
+    """
+
+    land: float = 0.6
+    level: float | None = None
+    min_area: float = 0.01
+    name: str = "ocean"
+
+    def __call__(self, world: World) -> None:
+        h = np.clip(world["height"], 0.0, 1.0)
+        if self.level is None:
+            if not 0 < self.land < 1:
+                raise ValueError("land must be between 0 and 1; leave the step out for no ocean")
+            level = float(np.quantile(h, 1 - self.land))
+        else:
+            level = float(self.level)
+        ocean = ocean_mask(h, level, min_area=self.min_area, wrap=world.wrap)
+        world.sea_level = level
+        world["height"] = h
+        world["ocean"] = ocean
+        world["ocean_depth"] = np.where(ocean, level - h, 0.0).astype(np.float32)
+
+
+@dataclass(frozen=True)
 class Thermal:
     """Thermal erosion. ``mask`` names a [0, 1] layer limiting where it applies."""
 
@@ -158,7 +216,8 @@ class Rivers:
     """Create ``flow``, ``rivers``, ``lakes`` and ``lake_depth``.
 
     Optionally carves ``height``, which is then clipped to [0, 1]. Water drains
-    to the bool layer ``ocean`` if the world has one.
+    to the bool layer ``ocean`` if the world has one. ``threshold`` defaults to
+    0.4% of the land cells.
     """
 
     carve: bool = True
@@ -168,14 +227,19 @@ class Rivers:
     def __call__(self, world: World) -> None:
         ocean = world.layers.get("ocean")
         kw = dict(outlets=ocean, wrap=world.wrap)
-        h = np.clip(world["height"], 0.0, 1.0)
+        land = world.size ** 2 if ocean is None else int((~ocean).sum())
+        threshold = max(0.004 * land, 2.0) if self.threshold is None else self.threshold
+        before = h = np.clip(world["height"], 0.0, 1.0)
         if self.carve:
             acc = flow_accumulation(h, **kw)
             still = detect_lakes(h, **kw).mask
             if ocean is not None:
                 still = still | ocean
-            h = carve_rivers(h, acc, threshold=self.threshold, lakes=still, wrap=world.wrap)
+            h = carve_rivers(h, acc, threshold=threshold, lakes=still, wrap=world.wrap)
             h = np.clip(h, 0.0, 1.0)
+            if world.sea_level is not None:
+                # don't dig river beds below the sea they flow into
+                h = np.maximum(h, np.minimum(before, world.sea_level)).astype(np.float32)
         acc = flow_accumulation(h, **kw)
         lakes = detect_lakes(h, **kw)
         still = lakes.mask if ocean is None else lakes.mask | ocean
@@ -183,7 +247,7 @@ class Rivers:
         world["flow"] = acc
         world["lakes"] = lakes.mask
         world["lake_depth"] = lakes.depth
-        world["rivers"] = river_mask(acc, self.threshold, still, wrap=world.wrap)
+        world["rivers"] = river_mask(acc, threshold, still, wrap=world.wrap)
 
 
 def _step_name(step: Callable) -> str:
@@ -221,11 +285,12 @@ class Pipeline:
         return out
 
 
-STEPS: dict[str, type] = {c.__name__: c for c in (Noise, Thermal, Hydraulic, Rivers)}
+STEPS: dict[str, type] = {c.__name__: c for c in (Noise, Continents, Thermal, Hydraulic,
+                                                Ocean, Rivers)}
 
 
 def default_pipeline() -> Pipeline:
-    return Pipeline([Noise(), Thermal(), Hydraulic(), Rivers()])
+    return Pipeline([Noise(), Continents(), Thermal(), Hydraulic(), Ocean(), Rivers()])
 
 
 def save_recipe(path: str, world: World, pipeline: Pipeline) -> None:

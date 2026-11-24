@@ -27,6 +27,21 @@ def save_raw16(path: str, heightmap: np.ndarray, big_endian: bool = False) -> No
     a.tofile(path)
 
 
+def water_map(shape: tuple[int, int], *, ocean: np.ndarray | None = None,
+              lakes: np.ndarray | None = None,
+              rivers: np.ndarray | None = None) -> np.ndarray:
+    """uint8 map of water: 0 land, 85 river, 170 lake, 255 ocean."""
+    out = np.zeros(shape, dtype=np.uint8)
+    for mask, value in ((rivers, 85), (lakes, 170), (ocean, 255)):
+        if mask is not None:
+            out[mask] = value
+    return out
+
+
+def save_water_map(path: str, shape: tuple[int, int], **masks) -> None:
+    Image.fromarray(water_map(shape, **masks)).save(path)
+
+
 def normal_map(heightmap: np.ndarray, strength: float | None = None, *,
                wrap: bool = False) -> np.ndarray:
     """Tangent-space normal map as uint8 RGB. ``strength`` is relief in cell units."""
@@ -44,23 +59,35 @@ def save_normal_map(path: str, heightmap: np.ndarray, strength: float | None = N
 
 
 def save_obj(path: str, heightmap: np.ndarray, *, max_resolution: int = 256,
-             horizontal_scale: float = 1.0, vertical_scale: float = 0.25) -> None:
+             horizontal_scale: float = 1.0, vertical_scale: float = 0.25,
+             wrap: bool = False) -> None:
     """Write a triangle mesh (.obj) with UVs and smooth normals.
 
     The map is block-averaged down to at most ``max_resolution`` vertices per
     side. ``vertical_scale`` is height as a fraction of the map width.
+    With ``wrap`` the first row and column are repeated at the far edges, so
+    copies placed side by side meet exactly.
     """
     h = np.asarray(heightmap, dtype=np.float64)
     n = h.shape[0]
     step = max(1, int(np.ceil(n / max_resolution)))
+    while wrap and n % step:
+        step += 1  # blocks must fit exactly or the tile would lose its edge
     if step > 1:
         m = (n // step) * step
         h = h[:m, :m].reshape(m // step, step, m // step, step).mean(axis=(1, 3))
+    if wrap:
+        h = np.pad(h, (0, 1), mode="wrap")
     r = h.shape[0]
     xs = np.linspace(0.0, horizontal_scale, r)
     X, Z = np.meshgrid(xs, xs)
     Y = h * vertical_scale * horizontal_scale
-    gz, gx = np.gradient(Y, xs, xs)
+    if wrap:
+        # one more ring on each side, so normals match across tiles too
+        ring = np.pad(Y[:-1, :-1], ((1, 2), (1, 2)), mode="wrap")
+        gz, gx = (g[1:-1, 1:-1] for g in np.gradient(ring, xs[1] - xs[0]))
+    else:
+        gz, gx = np.gradient(Y, xs, xs)
     nrm = np.stack([-gx, np.ones_like(gx), -gz], axis=-1)
     nrm /= np.linalg.norm(nrm, axis=-1, keepdims=True)
     u = np.linspace(0, 1, r)

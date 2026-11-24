@@ -80,8 +80,9 @@ def _fbm_sample(x, y, perm, octaves, lacunarity, gain, ridged, period):
     total = 0.0
     norm = 0.0
     weight = 1.0
-    for _ in range(octaves):
-        n = perlin2(x * freq, y * freq, perm, period)
+    for o in range(octaves):
+        # shift each octave so their lattices don't line up into straight features
+        n = perlin2(x * freq + 19.37 * o, y * freq + 7.73 * o, perm, period)
         if ridged:
             n = 1.0 - abs(n)
             n = n * n * weight

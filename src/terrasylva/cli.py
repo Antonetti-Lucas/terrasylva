@@ -6,8 +6,8 @@ import os
 import time
 
 from . import export, render
-from .world import (Hydraulic, Noise, Pipeline, Rivers, Thermal, World,
-                    load_recipe, save_recipe)
+from .world import (Continents, Hydraulic, Noise, Ocean, Pipeline, Rivers, Thermal,
+                    World, load_recipe, save_recipe)
 
 
 def _build_parser() -> argparse.ArgumentParser:
@@ -26,6 +26,10 @@ def _build_parser() -> argparse.ArgumentParser:
     g.add_argument("--river-threshold", type=float, default=None,
                    help="upstream cells needed to count as a river (default 0.4%% of map)")
     g.add_argument("--wrap", action="store_true", help="loop in both directions")
+    g.add_argument("--land", type=float, default=None,
+                   help="fraction of land (0-1); adds continents and an ocean")
+    g.add_argument("--continents", type=float, default=2.0,
+                   help="continent frequency: 2 = a few large ones, 5 = archipelago")
     g.add_argument("--cell-size", type=float, default=1.0, help="metres per cell")
     r = sub.add_parser("run", help="generate from a JSON recipe")
     r.add_argument("recipe")
@@ -44,9 +48,11 @@ def _export(world: World, out_dir: str, obj_resolution: int) -> None:
     export.save_raw16(out("heightmap.r16"), h)
     export.save_normal_map(out("normal.png"), h, world.relief, wrap=world.wrap)
     export.save_obj(out("terrain.obj"), h, max_resolution=obj_resolution,
-                    vertical_scale=world.relief / world.size)
-    render.save_preview(out("preview.png"), h, world.layers.get("rivers"),
-                        lakes=world.layers.get("lakes"), **look)
+                    vertical_scale=world.relief / world.size, wrap=world.wrap)
+    masks = {k: world.layers.get(k) for k in ("ocean", "lakes", "rivers")}
+    export.save_water_map(out("water.png"), h.shape, **masks)
+    render.save_preview(out("preview.png"), h, sea_level=world.sea_level,
+                        lake_depth=world.layers.get("lake_depth"), **masks, **look)
     if "base" in world:
         render.save_preview(out("preview_base.png"), world["base"], **look)
 
@@ -60,10 +66,14 @@ def main(argv: list[str] | None = None) -> int:
                       wrap=args.wrap)
         steps = [Noise(scale=args.scale, octaves=args.octaves, ridged=args.ridged,
                        warp=args.warp)]
+        if args.land is not None:
+            steps.append(Continents(scale=args.continents))
         if args.thermal > 0:
             steps.append(Thermal(iterations=args.thermal))
         if args.drops is None or args.drops > 0:
             steps.append(Hydraulic(drops=args.drops))
+        if args.land is not None:
+            steps.append(Ocean(land=args.land))
         steps.append(Rivers(carve=not args.no_carve, threshold=args.river_threshold))
         pipeline = Pipeline(steps)
     t0 = time.perf_counter()

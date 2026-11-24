@@ -2,17 +2,19 @@
 
 Procedural world generation in Python: fractal noise, particle-based hydraulic
 erosion, thermal erosion, lakes and rivers, with exports for game engines. Worlds are
-finite and can loop in both directions. A 1024×1024 terrain took about 3.6 s, or 4.4 s
-looping, on the development machine (Numba-compiled kernels, after compilation).
+finite and can loop in both directions. A 1024×1024 terrain took about 3.7 s, or 4.3 s
+looping with an ocean (19.8 s at 2048×2048), on the development machine (Numba-compiled kernels, after compilation).
 
 ![Before and after erosion](docs/before_after.png)
-*Left: raw domain-warped fBm. Right: after thermal + hydraulic erosion and river
-carving (512×512, seed 11).*
+*Left: raw noise and continents. Right: after thermal + hydraulic erosion and river
+carving (512×512, seed 11, looping, 60% land).*
 
 ## Features
 
 - **Looping worlds**: `wrap=True` makes noise, erosion, rivers, lakes and shading
   continue across all four edges.
+- **Oceans and continents**: choose the land fraction and how broken up it is; rivers
+  drain to the sea.
 - **Swappable steps**: remove, reorder, replace or re-run any stage, and save the whole
   setup as a JSON recipe.
 - **Noise**: Perlin fBm, ridged multifractal, and domain warping. Deterministic per seed.
@@ -22,7 +24,7 @@ carving (512×512, seed 11).*
 - **Hydrology**: priority-flood pit filling, lake mask and depth map, D8 flow routing
   through lakes, flow accumulation, river mask and valley carving.
 - **Exports**: 16-bit PNG, 16-bit RAW (Unity/Unreal), tangent-space normal map,
-  OBJ mesh with UVs and normals, plus colour and hillshade previews.
+  OBJ mesh with UVs and normals, water map, plus colour and hillshade previews.
 
 ## Install
 
@@ -36,7 +38,7 @@ pip install -e ".[dev]"
 CLI:
 
 ```bash
-terrasylva generate --size 1024 --seed 42 --drops 400000 -o out/
+terrasylva generate --size 1024 --seed 42 --land 0.6 --wrap -o out/
 ```
 
 Python:
@@ -94,12 +96,32 @@ world = pipeline.run(world, start="rivers")
 ## Looping worlds
 
 ![The same seed tiled 2×2, without and with wrap](docs/looping.png)
-*Seed 11 tiled 2×2. Left: default, with visible seams. Right: `wrap=True`.*
+*Seed 11 tiled 2×2, 60% land. Left: default, with visible seams. Right: `wrap=True`.*
 
 A looping world has no border for water to leave by. Pass a bool `outlets` mask (or add an
 `"ocean"` layer, which `Rivers` uses) to say where it drains; otherwise it drains to the
 lowest cell. Looping needs a whole-number noise `scale`. The exported OBJ is a single
-tile, so the game has to draw copies near the edge and move the player across.
+tile whose edges meet its neighbours exactly, so the game has to draw copies near the edge and move the player across.
+
+## Oceans and continents
+
+![Three looping worlds](docs/oceans.png)
+*Left to right: 60% land, an archipelago with 35% land, and 80% land (384×384, looping).*
+
+```python
+ts.Pipeline([ts.Noise(), ts.Continents(scale=2), ts.Thermal(), ts.Hydraulic(),
+             ts.Ocean(land=0.6), ts.Rivers()])
+```
+
+`Continents` adds a low-frequency shape and fades mountains towards the sea floor; a higher
+`scale` gives more, smaller land masses. `Ocean` picks the sea level that gives the
+requested land fraction. Only open water (at least `min_area` of the map, or the largest
+body) becomes ocean; smaller basins below sea level can become lakes. `Rivers` then drains
+to the ocean and never carves land below the sea. Leave both steps out for a world with
+no ocean.
+
+`water.png` marks 85 = river, 170 = lake, 255 = ocean. In previews only real water is
+blue: pass `ocean=`, `lakes=` and `sea_level=`.
 
 ## How the erosion works
 
@@ -112,9 +134,8 @@ checks that. Without that step, eroded material vanishes and pits grow without b
 
 ## Lakes and flow routing
 
-![Before and after lake detection](docs/lakes.png)
-*Seed 42, 512×512. Left: the previous routing, with straight parallel rivers across
-filled basins. Right: basins become lakes and rivers stop at the shore.*
+![Lakes and the drainage beneath them](docs/lakes.png)
+*Seed 42, 512×512, no ocean. Yellow: how water travels under the lakes to their outlets.*
 
 A closed basin fills to the level at which it spills; lake depth is that level minus the
 terrain. Basins that are too shallow or too small (`min_depth`, `min_area`) are not
@@ -127,21 +148,23 @@ produce the stripes. Carving leaves lake beds untouched.
 ## Known limitations
 
 - Square maps only, generated whole: no chunked or infinite generation.
-- The OBJ leaves a one-cell gap between neighbouring looped tiles, and it is
-  block-averaged; use the heightmap for exact edges.
-- Looping worlds without an ocean drain to a single low point, so one basin looks dry.
+- Erosion ignores the sea, so it also shapes the sea floor, and there are no beaches,
+  waves or river deltas.
+- Seas larger than `min_area` count as ocean even if enclosed by land.
+- Steps after `Ocean` that change heights need `Ocean` to run again. With the default
+  `land=`, that also recomputes the sea level; pass `level=` to keep it.
+- Looping worlds without an ocean still drain to a single low point, so one basin looks dry.
 - The same seed at a different size gives similar terrain but different lakes.
 - Masked erosion is blended, so it doesn't conserve mass.
 - Droplets are simulated sequentially (for determinism), so erosion doesn't scale
   across cores.
-- Lakes always fill to their spill point: there is no evaporation or water balance, so
-  default terrain is lake-heavy (23-26% of the map on seeds 7, 11 and 42 at 512×512).
+- Lakes always fill to their spill point: there is no evaporation or water balance.
+  Without an ocean, terrain is lake-heavy (20-29% of the map on seeds 7, 11 and 42 at
+  512×512); with one, lakes were 0-10% of the land on six test worlds.
 - Without `wrap`, the map border is always an outlet, so a basin cut by the border never holds water,
   and a lake's extent can change if the map is cropped.
 - Channels on dry flats wander plausibly but arbitrarily; D8 routing still limits flow to
   eight directions.
-- The preview draws detected lakes in flat blue, but still also colours low elevation
-  blue, whether or not it holds water.
 - Erosion parameters are tuned by eye on fBm terrain, not calibrated to real data.
 
 ## Roadmap
@@ -149,9 +172,11 @@ produce the stripes. Carving leaves lake beds untouched.
 - [x] Explicit lake detection and flat-area river routing
 - [x] World/pipeline core with recipes, units and independent seeds
 - [x] Looping worlds
-- [ ] Oceans and continents, with rivers draining to the sea, and real water in previews
+- [x] Oceans and continents, with rivers draining to the sea, and real water in previews
 - [ ] Climate (temperature, wind, rain shadows) and biome maps
-- [ ] Browser viewer (Three.js) and a Godot import example
+- [ ] Visual editor, so no code is needed: a local app opened in the browser with sliders,
+  a 3D preview, steps to switch on, off or reorder, and buttons to save, load and export
+- [ ] Godot import example
 - [ ] Generic object placement (optional, works with your own assets)
 - [ ] Cave networks with entrance masks (optional)
 - [ ] Simple trees (optional)

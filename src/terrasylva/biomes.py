@@ -129,7 +129,7 @@ def biome_legend(table: Sequence[Biome]) -> list[dict]:
 
 
 # ----------------------------------------------------------------- helpers
-@njit(cache=True)
+@njit(cache=True, nogil=True)
 def _distance(mask, wrap):
     """Chamfer distance in cells to the nearest True cell (about 1e9 if there is none)."""
     n = mask.shape[0]

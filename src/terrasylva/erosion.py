@@ -15,7 +15,7 @@ from ._grid import as_square
 # Hydraulic erosion: simulate individual raindrops carrying sediment.
 # --------------------------------------------------------------------------
 
-@njit(cache=True)
+@njit(cache=True, nogil=True)
 def _make_brush(radius):
     n = (2 * radius + 1) ** 2
     bx = np.empty(n, dtype=np.int32)
@@ -33,7 +33,7 @@ def _make_brush(radius):
     return bx[:k], by[:k], bw[:k]
 
 
-@njit(cache=True)
+@njit(cache=True, nogil=True)
 def _hydraulic(h, n_drops, seed, inertia, capacity, min_capacity, deposition,
                erosion, evaporation, gravity, max_steps, radius,
                init_speed, init_water, wrap):
@@ -204,7 +204,7 @@ def hydraulic_erosion(heightmap: np.ndarray, *, drops: int = 200_000, seed: int 
 # Thermal erosion: material slides down slopes steeper than the talus angle.
 # --------------------------------------------------------------------------
 
-@njit(cache=True)
+@njit(cache=True, nogil=True)
 def _thermal(h, iterations, talus, rate, wrap):
     size = h.shape[0]
     delta = np.zeros_like(h)

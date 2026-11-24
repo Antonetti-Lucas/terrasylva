@@ -36,6 +36,8 @@ def _build_parser() -> argparse.ArgumentParser:
                    help="add climate and biomes (temperature, rainfall, biome and splat maps)")
     r = sub.add_parser("run", help="generate from a JSON recipe")
     r.add_argument("recipe")
+    e = sub.add_parser("editor", help="open the visual editor")
+    e.add_argument("recipe", nargs="?")
     for q in (g, r):
         q.add_argument("--obj-resolution", type=int, default=256)
         q.add_argument("-o", "--out", default="out", help="output directory")
@@ -51,8 +53,9 @@ def _biome_table(pipeline: Pipeline | None, world: World):
     return table if world["biome_weights"].shape[-1] == len(table) else None
 
 
-def _export(world: World, out_dir: str, obj_resolution: int,
-            pipeline: Pipeline | None = None) -> None:
+def export_world(world: World, out_dir: str, obj_resolution: int = 256,
+                 pipeline: Pipeline | None = None) -> None:
+    """Write every file the world has layers for."""
     os.makedirs(out_dir, exist_ok=True)
     out = lambda name: os.path.join(out_dir, name)  # noqa: E731
     h = world["height"]
@@ -87,6 +90,9 @@ def _export(world: World, out_dir: str, obj_resolution: int,
 
 def main(argv: list[str] | None = None) -> int:
     args = _build_parser().parse_args(argv)
+    if args.cmd == "editor":
+        from .editor import main as editor_main
+        return editor_main([args.recipe] if args.recipe else [])
     if args.cmd == "run":
         world, pipeline = load_recipe(args.recipe)
     else:
@@ -111,7 +117,7 @@ def main(argv: list[str] | None = None) -> int:
     t0 = time.perf_counter()
     result = pipeline.run(world)
     dt = time.perf_counter() - t0
-    _export(result, args.out, args.obj_resolution, pipeline)
+    export_world(result, args.out, args.obj_resolution, pipeline)
     save_recipe(os.path.join(args.out, "recipe.json"), world, pipeline)
     print(f"generated {world.size}x{world.size} (seed {world.seed}) in {dt:.2f}s -> {args.out}/")
     return 0

@@ -59,7 +59,7 @@ def _blur_matrix(n: int, sigma: float, wrap: bool) -> np.ndarray:
 
 
 # ---------------------------------------------------------------- moisture sim
-@njit(cache=True)
+@njit(cache=True, nogil=True)
 def _sample(a, y, x, wrap, fill):
     """Bilinear sample of ``a`` at (y, x); cells outside a non-wrapping map read ``fill``."""
     n = a.shape[0]
@@ -84,7 +84,7 @@ def _sample(a, y, x, wrap, fill):
     return acc
 
 
-@njit(cache=True)
+@njit(cache=True, nogil=True)
 def _simulate(h, water, ux, uy, wrap, rain_out, orographic, evaporation, spread, inflow,
               max_sweeps, tol):
     """Steady-state moist air advected one cell along the dominant wind axis per step.

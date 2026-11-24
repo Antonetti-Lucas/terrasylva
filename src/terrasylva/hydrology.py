@@ -43,7 +43,7 @@ def _outlet_mask(h, outlets, wrap):
     return mask
 
 
-@njit(cache=True)
+@njit(cache=True, nogil=True)
 def _tie_break(idx):
     """Deterministic integer hash, so exact flats don't drain in index order."""
     v = (idx ^ (idx >> 15)) & 0x7FFFFFFF
@@ -53,7 +53,7 @@ def _tie_break(idx):
     return v ^ (v >> 15)
 
 
-@njit(cache=True)
+@njit(cache=True, nogil=True)
 def _flood(h, outlets, wrap, ox, oy):
     """Flood upwards from the outlets, always visiting the lowest reachable cell.
 
@@ -101,7 +101,7 @@ def _flood(h, outlets, wrap, ox, oy):
     return filled, parent, order
 
 
-@njit(cache=True)
+@njit(cache=True, nogil=True)
 def _receivers(h, filled, parent, outlets, ox, oy, dist):
     """Downstream cell per cell, -1 at outlets.
 
@@ -127,7 +127,7 @@ def _receivers(h, filled, parent, outlets, ox, oy, dist):
     return recv
 
 
-@njit(cache=True)
+@njit(cache=True, nogil=True)
 def _accumulate(recv, order, rain):
     # a receiver is always visited by the flood before its donors
     acc = rain.copy().ravel()
@@ -138,7 +138,7 @@ def _accumulate(recv, order, rain):
     return acc
 
 
-@njit(cache=True)
+@njit(cache=True, nogil=True)
 def _keep_lakes(depth, filled, min_depth, min_area, wrap, ox, oy):
     """8-connected submerged regions, minus those too shallow or too small."""
     n = depth.shape[0]

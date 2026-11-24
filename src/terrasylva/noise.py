@@ -15,12 +15,12 @@ def _permutation(seed: int) -> np.ndarray:
     return np.concatenate([p, p])
 
 
-@njit(cache=True, inline="always")
+@njit(cache=True, nogil=True, inline="always")
 def _fade(t):
     return t * t * t * (t * (t * 6.0 - 15.0) + 10.0)
 
 
-@njit(cache=True, inline="always")
+@njit(cache=True, nogil=True, inline="always")
 def _grad(h, x, y):
     # 8 unit-ish gradient directions
     h = h & 7
@@ -41,7 +41,7 @@ def _grad(h, x, y):
     return -y
 
 
-@njit(cache=True)
+@njit(cache=True, nogil=True)
 def perlin2(x, y, perm, period=0):
     """Single sample of 2D Perlin noise, roughly in [-1, 1].
 
@@ -73,7 +73,7 @@ def perlin2(x, y, perm, period=0):
     return x1 * (1 - v) + x2 * v
 
 
-@njit(cache=True)
+@njit(cache=True, nogil=True)
 def _fbm_sample(x, y, perm, octaves, lacunarity, gain, ridged, period):
     amp = 1.0
     freq = 1.0
@@ -95,7 +95,7 @@ def _fbm_sample(x, y, perm, octaves, lacunarity, gain, ridged, period):
     return total / norm
 
 
-@njit(cache=True, parallel=True)
+@njit(cache=True, nogil=True, parallel=True)
 def _fbm_grid(size, scale, perm, octaves, lacunarity, gain, ridged,
               warp, warp_scale, ox, oy, period, warp_period):
     out = np.empty((size, size), dtype=np.float32)

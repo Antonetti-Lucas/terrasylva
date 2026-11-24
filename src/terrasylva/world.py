@@ -334,9 +334,12 @@ def load_recipe(path: str, extra_steps: dict[str, type] | None = None) -> tuple[
         for entry in data["steps"]:
             args = dict(entry)
             kind = args.pop("step")
+            enabled = args.pop("enabled", True)  # the editor can switch steps off
             if kind not in known:
                 raise ValueError(f"unknown step {kind!r}; known steps are {sorted(known)}")
-            steps.append(known[kind](**args))
+            step = known[kind](**args)
+            if enabled:
+                steps.append(step)
         return World(**data["world"]), Pipeline(steps)
     except (KeyError, TypeError) as e:
         raise ValueError(f"invalid recipe {path}: {e}") from e

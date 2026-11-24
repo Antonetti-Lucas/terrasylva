@@ -42,6 +42,25 @@ git clone https://github.com/Antonetti-Lucas/terrasylva && cd terrasylva
 pip install -e ".[dev]"
 ```
 
+## Visual editor
+
+![The editor showing a looping world by biome](docs/editor.png)
+
+```bash
+pip install -e ".[editor]"
+terrasylva editor            # or: terrasylva editor recipe.json
+```
+
+Move the sliders and the preview updates. Tick, untick, drag, add or remove steps; only
+the steps after a change run again. *Show* switches between landscape, biomes,
+temperature, rainfall and height, and *Repeat* draws copies around a looping world.
+*Export* generates at the final size and writes the same files as the command line. Saved
+recipes also run with `terrasylva run`. Drag to orbit, right-drag to move, scroll to zoom.
+
+Editor limits: no sculpting brush and no biome table editing yet (recipes keep custom
+tables). The preview is smaller than the final world, so lakes and small rivers differ;
+use *Show final size* to check. A running step finishes before a change takes effect.
+
 ## Usage
 
 CLI:
@@ -277,8 +296,8 @@ produce the stripes. Carving leaves lake beds untouched.
 - [x] Oceans and continents, with rivers draining to the sea, and real water in previews
 - [x] Climate (temperature, wind, rain shadows) and biome maps
 - [ ] Wind that varies across the map, seasons, and evaporation that depends on temperature
-- [ ] Visual editor (desktop, PySide6), so no code is needed: sliders, a 3D preview, steps to
-  switch on, off or reorder, and buttons to save, load and export
+- [x] Visual editor (desktop, PySide6): sliders, 3D preview, step list, save, load, export
+- [ ] Editor: sculpting brush, biome table editing, standalone .exe
 - [ ] Godot import example
 - [ ] Generic object placement (optional, works with your own assets)
 - [ ] Cave networks with entrance masks (optional)
@@ -290,7 +309,7 @@ produce the stripes. Carving leaves lake beds untouched.
 pytest
 ```
 
-The suite covers determinism, looping, pipeline and recipe behaviour, mass conservation, border safety, flow conservation,
+The suite covers determinism, looping, pipeline and recipe behaviour, the editor, mass conservation, border safety, flow conservation,
 pit filling, acyclic routing, lake detection, and export formats. For climate and biomes it
 checks shifted worlds against shifted results, colder air at altitude, rain shadows that
 reverse with the wind, rain conserved along the drainage, weights and splat sums, custom and

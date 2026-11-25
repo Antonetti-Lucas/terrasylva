@@ -7,8 +7,8 @@ import time
 
 from . import export, render
 from .biomes import Biomes, biome_legend, default_biome_table
-from .world import (Climate, Continents, Fluvial, Hydraulic, Noise, Ocean, Pipeline, Ranges, Rivers,
-                    Thermal,
+from .world import (Basins, Climate, Continents, Fluvial, Hydraulic, Noise, Ocean, Pipeline, Ranges, Rivers,
+                    SeaFloor, Thermal,
                     World, load_recipe, save_recipe)
 
 
@@ -111,7 +111,7 @@ def main(argv: list[str] | None = None) -> int:
         if args.land is not None:
             steps.append(Continents(scale=args.continents))
         if args.fluvial:
-            steps += [Ranges(), Ocean(land=args.land), Fluvial()]
+            steps += [Ranges(), Ocean(land=args.land), SeaFloor(), Basins(), Fluvial()]
         elif args.thermal > 0:
             steps.append(Thermal(iterations=args.thermal))
         if args.drops is None or args.drops > 0:

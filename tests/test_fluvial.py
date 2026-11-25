@@ -6,7 +6,7 @@ from terrasylva import hydrology as hy
 from terrasylva.cli import main as cli_main
 from terrasylva.fluvial import _DIST, _OX, _OY, _drainage, plate_collision
 
-STEPS = [ts.Noise(), ts.Continents(), ts.Ranges(), ts.Ocean(), ts.Fluvial(steps=30),
+STEPS = [ts.Noise(), ts.Continents(), ts.Ranges(), ts.Ocean(), ts.Fluvial(steps=30, deltas=0),
          ts.Hydraulic(capacity=0.5), ts.Rivers(carve=False)]
 
 
@@ -122,7 +122,8 @@ def test_landscape_drains_almost_without_pits():
 def test_fewer_pits_than_classic_erosion_on_average():
     def pits(w):
         h = w["height"].astype(np.float64)
-        f = ts.fill_depressions(h, outlets=w["ocean"], wrap=True)
+        ends = w["ocean"] | w["sinks"] if "sinks" in w else w["ocean"]  # basins are no pits
+        f = ts.fill_depressions(h, outlets=ends, wrap=True)
         return ((f > h) & ~w["ocean"]).sum() / (~w["ocean"]).sum()
 
     new, old = [], []
@@ -217,8 +218,8 @@ def test_recipe_and_cli(tmp_path):
     out = str(tmp_path / "o")
     assert cli_main(["generate", "--size", "64", "--wrap", "--fluvial", "--biomes", "-o", out]) == 0
     kinds = [type(s).__name__ for s in ts.load_recipe(out + "/recipe.json")[1].steps]
-    assert kinds == ["Noise", "Continents", "Ranges", "Ocean", "Fluvial", "Hydraulic",
-                     "Climate", "Rivers", "Biomes"]
+    assert kinds == ["Noise", "Continents", "Ranges", "Ocean", "SeaFloor", "Basins", "Fluvial",
+                     "Hydraulic", "Climate", "Rivers", "Biomes"]
 
 
 @pytest.mark.parametrize("max_slope", [0.3, 0.65])

@@ -22,6 +22,7 @@ from .fluvial import Fluvial, Ranges
 from .hydrology import (carve_rivers, detect_lakes, flow_accumulation,
                         ocean_mask, river_mask)
 from .noise import fbm, normalize
+from .sediment import Basins, SeaFloor, terminal_lakes
 
 
 @dataclass
@@ -109,9 +110,10 @@ def _blend(world: World, new: np.ndarray, mask: str | None) -> None:
     old = world["height"]
     ocean = world.layers.get("ocean")
     if ocean is not None and world.sea_level is not None:
-        # the sea floor rests, and land may wear down to the sea but not below
+        # the sea floor and basins below the sea rest (or droplets would fill them up),
+        # and other land may wear down to the sea but not below
         floor = np.minimum(old, np.nextafter(np.float32(world.sea_level), np.float32(2.0)))
-        new = np.where(ocean, old, np.maximum(new, floor))
+        new = np.where(ocean | (old < np.float32(world.sea_level)), old, np.maximum(new, floor))
     if mask is not None:
         m = np.clip(world[mask].astype(np.float32), 0.0, 1.0)
         # exact where m is 0, so protected cells keep their value bit for bit
@@ -244,10 +246,15 @@ class Rivers:
     rain instead of cells, so dry regions get fewer rivers. Rainfall averages 1
     over land, so the default threshold still means about the same. The layer is
     read as it is: after removing :class:`Climate` from a pipeline, delete it too.
+
+    Water also ends in ``sinks`` (see :class:`Fluvial`), in lakes without an
+    outflow that cover inflow / ``evaporation`` cells (``evaporation`` in units of
+    mean rainfall: higher gives smaller lakes).
     """
 
     carve: bool = True
     threshold: float | None = None
+    evaporation: float = 25.0
     name: str = "rivers"
 
     def __call__(self, world: World) -> None:
@@ -259,15 +266,17 @@ class Rivers:
             rain = np.asarray(rain, dtype=np.float64)
             if not (np.isfinite(rain).all() and (rain >= 0).all()):
                 raise ValueError("rainfall must be finite and >= 0")
-        kw = dict(outlets=ocean, wrap=world.wrap)
+        sinks = world.layers.get("sinks")
+        ends = ocean if sinks is None else sinks if ocean is None else ocean | sinks
+        kw = dict(outlets=ends, wrap=world.wrap)
         land = world.size ** 2 if ocean is None else int((~ocean).sum())
         threshold = max(0.004 * land / world.extent ** 2, 2.0) if self.threshold is None else self.threshold
         before = h = np.clip(world["height"], 0.0, 1.0)
         if self.carve:
             acc = flow_accumulation(h, rain, **kw)
             still = detect_lakes(h, **kw).mask
-            if ocean is not None:
-                still = still | ocean
+            if ends is not None:
+                still = still | ends
             h = carve_rivers(h, acc, threshold=threshold, lakes=still, wrap=world.wrap)
             h = np.clip(h, 0.0, 1.0)
             if world.sea_level is not None:
@@ -275,11 +284,16 @@ class Rivers:
                 h = np.maximum(h, np.minimum(before, world.sea_level)).astype(np.float32)
         acc = flow_accumulation(h, rain, **kw)
         lakes = detect_lakes(h, **kw)
-        still = lakes.mask if ocean is None else lakes.mask | ocean
+        depth = lakes.depth
+        if sinks is not None:
+            depth = np.maximum(depth, terminal_lakes(h, acc, sinks, ocean, wrap=world.wrap,
+                                                     evaporation=self.evaporation))
+        wet = depth > 0
+        still = wet if ends is None else wet | ends
         world["height"] = h.astype(np.float32)
         world["flow"] = acc
-        world["lakes"] = lakes.mask
-        world["lake_depth"] = lakes.depth
+        world["lakes"] = wet
+        world["lake_depth"] = depth
         world["rivers"] = river_mask(acc, threshold, still, wrap=world.wrap)
 
 
@@ -319,12 +333,12 @@ class Pipeline:
 
 
 STEPS: dict[str, type] = {c.__name__: c for c in (Noise, Continents, Ranges, Thermal, Hydraulic, Ocean,
-                                                Fluvial, Climate, Rivers, Biomes)}
+                                                SeaFloor, Basins, Fluvial, Climate, Rivers, Biomes)}
 
 
 def default_pipeline() -> Pipeline:
     """Continents and mountain ranges carved by rivers, with climate and biomes."""
-    return Pipeline([Noise(), Continents(), Ranges(), Ocean(), Fluvial(),
+    return Pipeline([Noise(), Continents(), Ranges(), Ocean(), SeaFloor(), Basins(), Fluvial(),
                      Hydraulic(capacity=0.5), Climate(), Rivers(carve=False), Biomes()])
 
 

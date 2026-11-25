@@ -14,9 +14,11 @@ import numpy as np
 from numba import njit
 
 from ._grid import area_matrix, blur_matrix, linear_matrix
+from .biomes import _distance
 from .erosion import thermal_erosion
-from .hydrology import _DIST, _OX, _OY, _flood, _outlet_mask, _receivers
+from .hydrology import _DIST, _OX, _OY, _accumulate, _flood, _outlet_mask, _receivers
 from .noise import fbm, normalize
+from .sediment import _label, _valley_floors, build_deltas
 
 if TYPE_CHECKING:  # world.py imports this module, so only import it for type checks
     from .world import World
@@ -229,7 +231,8 @@ def _levels(size: int) -> list[int]:
 def stream_power(uplift: np.ndarray, *, outlets: np.ndarray | None = None, seed: int = 0,
                  steps: int = 60, concavity: float = 0.45, smoothing: float = 0.1,
                  hardness: np.ndarray | None = None, rain: np.ndarray | None = None,
-                 wrap: bool = False, spread: float = 1.5) -> np.ndarray:
+                 wrap: bool = False, spread: float = 1.5, deposition: float = 0.0,
+                 base: np.ndarray | None = None) -> np.ndarray:
     """Height above the outlets of a landscape in balance between uplift and rivers.
 
     Args:
@@ -243,9 +246,12 @@ def stream_power(uplift: np.ndarray, *, outlets: np.ndarray | None = None, seed:
         hardness: resistance of the rock, around 1, > 0.
         rain: rainfall per cell, around 1.
         spread: how strongly flow concentrates on the steepest way down.
+        deposition: how readily rivers drop the sediment they carry. Above 0,
+            debris from fast-rising ground builds up slow-rising ground downstream.
+        base: height of the outlets, 0 or below; default 0.
 
     Returns:
-        float64 heights >= 0 in arbitrary units.
+        float64 heights in arbitrary units, not below the lowest outlet.
     """
     u = np.ascontiguousarray(uplift, dtype=np.float64)
     n = u.shape[0] if u.ndim == 2 else 0
@@ -259,6 +265,11 @@ def stream_power(uplift: np.ndarray, *, outlets: np.ndarray | None = None, seed:
         raise ValueError("smoothing must be in [0, 0.25]")
     if not 0 < concavity < 1 or not spread > 0:
         raise ValueError("concavity must be in (0, 1) and spread > 0")
+    if not 0 <= deposition <= 2:
+        raise ValueError("deposition must be in [0, 2]")
+    low = np.zeros_like(u) if base is None else np.ascontiguousarray(base, dtype=np.float64)
+    if low.shape != u.shape or not np.isfinite(low).all() or low.max() > 0:
+        raise ValueError("base must be finite, <= 0 and match uplift")
     extra = []
     for label, a in (("hardness", hardness), ("rain", rain)):
         a = np.ones_like(u) if a is None else np.ascontiguousarray(a, dtype=np.float64)
@@ -278,6 +289,9 @@ def stream_power(uplift: np.ndarray, *, outlets: np.ndarray | None = None, seed:
         lift = shrink(u)
         hardness_c, rain_c = shrink(hard), shrink(wet)
         sink = sinks if size == n else shrink(sinks.astype(np.float64)) > 0.5
+        if size != n and base is not None:
+            # narrow basins must not vanish on coarse grids
+            sink = sink | (shrink(low) < 0.3 * min(float(low.min()), -1e-12))
         sink = _outlet_mask(lift, sink, wrap)
         if h is None:
             h = rng.random((size, size)) * 1e-3
@@ -286,7 +300,11 @@ def stream_power(uplift: np.ndarray, *, outlets: np.ndarray | None = None, seed:
             h = up @ h @ up.T
             # break the symmetry of interpolated slopes, or valleys follow the grid
             h += rng.random((size, size)) * 2e-2 * h
-        h = np.ascontiguousarray(np.where(sink, 0.0, h))
+        bottom = low if size == n else shrink(low)
+        bottom = np.where(sink, bottom, 0.0)
+        deepest = float(bottom.min())
+        h = np.ascontiguousarray(np.where(sink, bottom, h))
+        load = None
         count = max(int(round(steps * 0.45 ** level)), 4)
         cell = 1.0 / size
         for _ in range(count):
@@ -294,9 +312,19 @@ def stream_power(uplift: np.ndarray, *, outlets: np.ndarray | None = None, seed:
             recv = _receivers(h, filled, parent, sink, _OX, _OY, _DIST)
             acc = _drainage(h, filled, recv, order, rain_c, float(spread),
                             _OX, _OY, _DIST) * cell * cell
-            h = _incise(h, filled, recv, order, acc, lift * 0.05, hardness_c, 0.4 / cell,
+            rise = lift * 0.05
+            if load is not None:
+                # deposition is limited by how fast the land upstream wears down
+                rise = rise + deposition * load
+            before = h
+            h = _incise(h, filled, recv, order, acc, rise, hardness_c, 0.4 / cell,
                         float(concavity), float(spread), _OX, _OY, _DIST)
-            h = np.ascontiguousarray(np.maximum(_diffuse(h, smoothing, sink, wrap), 0.0))
+            h = np.ascontiguousarray(np.maximum(_diffuse(h, smoothing, sink, wrap), deepest))
+            if deposition > 0:
+                eroded = np.where(sink, 0.0, np.maximum(before + lift * 0.05 - h, 0.0))
+                carried = _drainage(before, filled, recv, order, np.ascontiguousarray(eroded),
+                                    float(spread), _OX, _OY, _DIST) * cell * cell
+                load = (carried / acc).reshape(size, size)
     return h
 
 
@@ -311,6 +339,12 @@ class Fluvial:
     crests, ``hardness`` is how much the resistance of the rock varies
     (soft areas become valleys), and ``lowlands`` raises plains relative to
     peaks. Ground steeper than ``max_slope`` (height per distance) is worn back.
+
+    Sediment: ``deposition`` builds plains below mountains, ``valleys`` gives rivers
+    flat floors that widen downstream, and ``deltas`` extends the coast at river
+    mouths (which updates ``ocean``). 0 turns each off. A ``basin`` layer (see
+    :class:`Basins`) becomes dry land below the sea, and its lowest parts the
+    bool layer ``sinks``, where water ends.
     """
 
     steps: int = 60
@@ -320,21 +354,33 @@ class Fluvial:
     lowlands: float = 0.3
     max_slope: float = 0.8
     rounding: int = 2
+    deposition: float = 0.4
+    valleys: float = 2.0
+    deltas: float = 1.0
     name: str = "fluvial"
 
     def __call__(self, world: World) -> None:
         if "uplift" not in world:
             raise ValueError("Fluvial needs the 'uplift' layer; run Ranges first")
         if not 0 <= self.hardness <= 1 or not 0 <= self.lowlands <= 0.9 or self.max_slope <= 0 \
-                or self.rounding < 0:
-            raise ValueError("hardness must be in [0, 1], lowlands in [0, 0.9], max_slope > 0, rounding >= 0")
+                or self.rounding < 0 or self.valleys < 0 or self.deltas < 0:
+            raise ValueError("hardness must be in [0, 1], lowlands in [0, 0.9], max_slope > 0, "
+                             "rounding, valleys and deltas >= 0")
         n = world.size
         ocean = world.layers.get("ocean")
         sea = 0.0 if world.sea_level is None or ocean is None else float(world.sea_level)
         rock = fbm(n, seed=world.seed_for(self.name + "/rock"), scale=10.0 * world.extent, octaves=5, warp=0.5,
                    wrap=world.wrap).astype(np.float64)
         hard = np.exp(2.0 * self.hardness * (2.0 * rock - 1.0))
-        h = stream_power(world["uplift"], outlets=ocean, seed=world.seed_for(self.name),
+        basin = world.layers.get("basin")
+        basin = np.zeros((n, n)) if basin is None else np.asarray(basin, dtype=np.float64)
+        if ocean is not None:
+            basin = np.where(ocean, 0.0, basin)
+        hollow = basin > 0
+        ends = ocean
+        if hollow.any():
+            ends = hollow if ocean is None else ocean | hollow
+        h = stream_power(world["uplift"], outlets=ends, deposition=self.deposition, seed=world.seed_for(self.name),
                          steps=self.steps, concavity=self.concavity, smoothing=self.smoothing,
                          hardness=hard, wrap=world.wrap)
         land = np.ones((n, n), dtype=bool) if ocean is None else ~ocean
@@ -343,6 +389,7 @@ class Fluvial:
         # the few highest cells must not flatten everything else
         top = max(float(np.quantile(h[land], 0.9995)), 1e-12)
         t = h / top
+        # basins are worked out as outlets at sea level; their floor is lowered below
         t = np.where(t > 0.9, 0.9 + 0.1 * np.tanh((t - 0.9) / 0.1), t)
         t = t ** (1.0 - self.lowlands)
         # land starts just above the sea, so the coast stays where it is
@@ -351,7 +398,29 @@ class Fluvial:
         old = np.clip(np.asarray(world["height"], dtype=np.float64), 0.0, 1.0) \
             if "height" in world else np.zeros((n, n))
         new = np.where(land, land_height, old)
-        sinks = _outlet_mask(new, ocean, world.wrap)
+        if hollow.any():
+            new = np.where(hollow, sea - (1.0 - sea) * basin, new)
+            # the surroundings sink towards the basin, so land around it lies below the sea too
+            reach = 0.06 / world.extent
+            near = np.exp(-_distance(hollow, bool(world.wrap)) / (reach * n))
+            pull = np.where(land & ~hollow, (1.0 - sea) * float(basin.max()) * 0.8 * near, 0.0)
+            if ocean is not None and ocean.any():
+                coast = _distance(ocean, bool(world.wrap)) / (reach * n)
+                pull = pull * _smoothstep(coast / 2.0 - 0.5)
+            new = new - pull
+            new = np.maximum(new, sea - (1.0 - sea) * float(basin.max()))
+            # water ends in the deepest spot of each basin
+            lab, count = _label(np.ascontiguousarray(hollow), bool(world.wrap), _OX, _OY)
+            spots = np.zeros((n, n), dtype=bool)
+            for i in range(1, count + 1):
+                part = lab == i
+                if part.sum() >= 9:
+                    spots |= part & (basin >= 0.97 * basin[part].max())
+            world["sinks"] = spots if spots.any() else hollow
+        ends = ocean
+        if hollow.any():
+            ends = world["sinks"] if ocean is None else ocean | world["sinks"]
+        sinks = _outlet_mask(new, ends, world.wrap)
         filled, parent, order = _flood(new, sinks, bool(world.wrap), _OX, _OY)
         recv = _receivers(new, filled, parent, sinks, _OX, _OY, _DIST)
         # cliffs start from the sea surface, not from the sea floor
@@ -364,4 +433,45 @@ class Fluvial:
             new = np.minimum(new, _diffuse(new, 0.15, ~land, world.wrap))
         # slides must not move the coast
         floor = np.nextafter(np.float32(sea + 1e-4), np.float32(1.0))
-        world["height"] = np.where(land, np.maximum(new, floor), old).astype(np.float32)
+        floor = np.where(new < sea, new, floor) if hollow.any() else floor
+        new = np.where(land, np.maximum(new, floor), old)
+        if self.valleys > 0 or self.deltas > 0:
+            new = self._sediment(world, new, ends, sea)
+        world["height"] = new.astype(np.float32)
+
+    def _sediment(self, world: World, h: np.ndarray, ends, sea: float) -> np.ndarray:
+        n = world.size
+        h = np.ascontiguousarray(h, dtype=np.float64)
+        ocean = world.layers.get("ocean")
+        out = _outlet_mask(h, ends, world.wrap)
+        filled, parent, order = _flood(h, out, bool(world.wrap), _OX, _OY)
+        recv = _receivers(h, filled, parent, out, _OX, _OY, _DIST)
+        # drainage as a share of a region, so that it doesn't depend on resolution
+        share = _accumulate(recv, order, np.ones((n, n))) * (world.extent / n) ** 2
+        if self.valleys > 0:
+            surface = np.where(ocean, sea, h) if ocean is not None else h
+            unit = 1.0 - sea
+            blur = blur_matrix(n, 0.012 * n / world.extent, world.wrap)
+            room = np.maximum(blur @ surface @ blur.T - surface, 0.0)
+            # basins below the sea must not silt up
+            room = np.where(h < sea, 0.0, room).ravel()
+            new, _ = _valley_floors(np.ascontiguousarray(surface), recv, order, share,
+                                    np.ascontiguousarray(room), 4e-4,
+                                       0.16 * self.valleys * unit, 0.03 / world.relief,
+                                       0.0008 / world.relief)
+            h = np.where(out, h, new)
+        if self.deltas > 0 and ocean is not None and ocean.any():
+            down = np.where(recv >= 0, recv, 0)
+            mouth = (recv >= 0) & ocean.ravel()[down] & ~ocean.ravel() & (share > 8e-3)
+            mouths = np.flatnonzero(mouth)
+            mouths = mouths[np.argsort(-share[mouths], kind="stable")]
+            size = 0.06 * self.deltas * share[mouths] * (n / world.extent) ** 2
+            keep = size >= 4
+            rough = fbm(n, seed=world.seed_for(self.name + "/delta"), scale=40.0 * world.extent,
+                        octaves=3, wrap=world.wrap).astype(np.float64)
+            # deep water swallows sediment, shallows fill up
+            cost = 0.15 + 8.0 * np.maximum(rough - 0.35, 0.0) + 12.0 * np.maximum(sea - h, 0.0)
+            h, wet = build_deltas(h, ocean, sea, mouths[keep], size[keep], cost, world.wrap)
+            world["ocean"] = wet
+            world["ocean_depth"] = np.where(wet, np.maximum(sea - h, 0.0), 0.0).astype(np.float32)
+        return h

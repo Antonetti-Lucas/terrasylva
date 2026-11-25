@@ -22,7 +22,8 @@ from .view import TerrainView
 from .widgets import ParamForm
 
 _STEP_LABELS = {"Noise": "Base terrain", "Continents": "Continents",
-                "Ranges": "Mountain ranges", "Fluvial": "River landscape", "Thermal": "Slope erosion",
+                "Ranges": "Mountain ranges", "Fluvial": "River landscape",
+                "SeaFloor": "Sea floor", "Basins": "Basins below sea", "Thermal": "Slope erosion",
                 "Hydraulic": "Water erosion", "Ocean": "Ocean", "Climate": "Climate",
                 "Rivers": "Rivers and lakes", "Biomes": "Biomes"}
 _FILTER = "terrasylva recipe (*.json)"

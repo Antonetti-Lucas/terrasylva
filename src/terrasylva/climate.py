@@ -243,7 +243,9 @@ class Climate:
         sea = 0.0 if world.sea_level is None else float(world.sea_level)
         ocean = world.layers.get("ocean")
         ocean = None if ocean is None else np.asarray(ocean).astype(bool)
-        lakes = detect_lakes(height, outlets=ocean, wrap=world.wrap).mask
+        sinks = world.layers.get("sinks")
+        ends = ocean if sinks is None else sinks if ocean is None else ocean | sinks
+        lakes = detect_lakes(height, outlets=ends, wrap=world.wrap).mask
         rain = self.rainfall(world, height, sea, ocean, lakes)
         world["temperature"] = self.temperature(world, height, sea)
         world["rainfall"] = rain.astype(np.float32)

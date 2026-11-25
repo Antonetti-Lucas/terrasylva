@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "terrasylva"
 version = "0.1.0"
-description = "Procedural terrain generation with hydraulic/thermal erosion and river extraction."
+description = "Procedural worlds with river-carved terrain, oceans, climate and biomes."
 readme = "README.md"
 requires-python = ">=3.10"
 license = { text = "MIT" }

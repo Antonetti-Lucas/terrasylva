@@ -69,6 +69,17 @@ def biome_rgb(biome: np.ndarray, colors, weights: np.ndarray | None = None) -> n
     return colors[biome]
 
 
+def _near(mask: np.ndarray, cells: int, wrap: bool) -> np.ndarray:
+    """1 on ``mask``, fading to 0 over ``cells`` cells around it."""
+    out = mask.astype(np.float64)
+    for i in range(cells):
+        p = np.pad(out, 1, mode="wrap" if wrap else "edge")
+        grown = np.maximum.reduce([p[1:-1, 1:-1], p[:-2, 1:-1], p[2:, 1:-1], p[1:-1, :-2],
+                                   p[1:-1, 2:]])
+        out = np.where(out > 0, out, grown * (1.0 - 1.0 / (cells + 1)))
+    return out
+
+
 def colorize(heightmap: np.ndarray, rivers: np.ndarray | None = None,
              sea_level: float | None = None,
              lakes: np.ndarray | None = None, relief: float | None = None,
@@ -92,6 +103,9 @@ def colorize(heightmap: np.ndarray, rivers: np.ndarray | None = None,
     rgb = _ramp(above, _LAND)
     if sea_level is not None:
         beach = np.clip(1.0 - above / 0.025, 0.0, 1.0)[..., None]
+        if ocean is not None:
+            # low ground far inland is a plain, not a beach
+            beach = beach * _near(ocean, max(h.shape[0] // 128, 1), wrap)[..., None]
         rgb = rgb * (1 - beach) + np.array(_BEACH) * beach
     if biome_colors is not None:
         if biome is None and biome_weights is None:

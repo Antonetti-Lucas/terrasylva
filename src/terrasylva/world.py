@@ -18,6 +18,7 @@ import numpy as np
 from .biomes import Biomes
 from .climate import Climate
 from .erosion import hydraulic_erosion, thermal_erosion
+from .fluvial import Fluvial, Ranges
 from .hydrology import (carve_rivers, detect_lakes, flow_accumulation,
                         ocean_mask, river_mask)
 from .noise import fbm, normalize
@@ -32,8 +33,11 @@ class World:
         seed: master seed; see :meth:`seed_for`.
         cell_size: metres per cell.
         height_range: metres represented by heights 0 and 1. Defaults to a
-            relief of a tenth of the world's width.
+            relief of a tenth of a region's width.
         wrap: the world loops in both directions.
+        extent: how many regions fit across the world. 1 is a single landscape;
+            4 holds 4x4 regions' worth of ranges, valleys and weather, at a
+            smaller scale. Raise ``size`` along with it to keep the detail.
         sea_level: height of the sea surface, or None. Set by :class:`Ocean`.
         layers: arrays by name, e.g. ``"height"`` (float32, nominally [0, 1]).
     """
@@ -44,6 +48,7 @@ class World:
     height_range: tuple[float, float] | None = None
     wrap: bool = False
     sea_level: float | None = None
+    extent: int = 1
     layers: dict[str, np.ndarray] = field(default_factory=dict)
 
     def __post_init__(self):
@@ -51,8 +56,11 @@ class World:
             raise ValueError("size must be >= 8")
         if not self.cell_size > 0:
             raise ValueError("cell_size must be > 0")
+        if self.extent < 1 or self.extent != int(self.extent):
+            raise ValueError("extent must be a whole number >= 1")
+        self.extent = int(self.extent)
         if self.height_range is None:
-            self.height_range = (0.0, 0.1 * self.size * self.cell_size)
+            self.height_range = (0.0, 0.1 * self.size * self.cell_size / self.extent)
         lo, hi = self.height_range
         if not hi > lo:
             raise ValueError("height_range must be (low, high) with high > low")
@@ -97,7 +105,13 @@ class World:
 
 
 def _blend(world: World, new: np.ndarray, mask: str | None) -> None:
+    """Store eroded heights, limited by a mask and by an existing coast."""
     old = world["height"]
+    ocean = world.layers.get("ocean")
+    if ocean is not None and world.sea_level is not None:
+        # the sea floor rests, and land may wear down to the sea but not below
+        floor = np.minimum(old, np.nextafter(np.float32(world.sea_level), np.float32(2.0)))
+        new = np.where(ocean, old, np.maximum(new, floor))
     if mask is not None:
         m = np.clip(world[mask].astype(np.float32), 0.0, 1.0)
         # exact where m is 0, so protected cells keep their value bit for bit
@@ -116,7 +130,7 @@ class Noise:
     name: str = "noise"
 
     def __call__(self, world: World) -> None:
-        kw = dict(scale=self.scale, octaves=self.octaves, warp=self.warp, wrap=world.wrap)
+        kw = dict(scale=self.scale * world.extent, octaves=self.octaves, warp=self.warp, wrap=world.wrap)
         smooth = fbm(world.size, seed=world.seed_for(self.name + "/smooth"), **kw)
         ridge = fbm(world.size, seed=world.seed_for(self.name + "/ridged"), ridged=True, **kw)
         h = normalize((1 - self.ridged) * smooth + self.ridged * ridge)
@@ -155,7 +169,8 @@ class Ocean:
     """Set the sea level and create ``ocean`` and ``ocean_depth``.
 
     ``land`` is the fraction of cells above the sea. Basins that lie below sea
-    level but aren't connected to open water stay out of the ocean, so total
+    level but aren't connected to open water, or smaller than ``min_area`` of a
+    region, stay out of the ocean, so total
     land is slightly higher. ``level`` sets the height directly instead.
     """
 
@@ -172,7 +187,7 @@ class Ocean:
             level = float(np.quantile(h, 1 - self.land))
         else:
             level = float(self.level)
-        ocean = ocean_mask(h, level, min_area=self.min_area, wrap=world.wrap)
+        ocean = ocean_mask(h, level, min_area=self.min_area / world.extent ** 2, wrap=world.wrap)
         world.sea_level = level
         world["height"] = h
         world["ocean"] = ocean
@@ -199,16 +214,20 @@ class Hydraulic:
     """Hydraulic erosion. ``drops`` defaults to 0.3 per cell.
 
     ``mask`` names a [0, 1] layer limiting where it applies. Masked results are
-    blended, so mass is only conserved when there is no mask.
+    blended, so mass is only conserved when there is no mask. After :class:`Ocean`,
+    the sea floor is left alone and whatever reaches it is lost. ``capacity`` is
+    how much sediment water can carry: 4 carves deeply but leaves a grainy
+    surface, about 0.5 only adds fine detail.
     """
 
     drops: int | None = None
+    capacity: float = 4.0
     mask: str | None = None
     name: str = "hydraulic"
 
     def __call__(self, world: World) -> None:
         drops = int(0.3 * world.size ** 2) if self.drops is None else self.drops
-        _blend(world, hydraulic_erosion(world["height"], drops=drops,
+        _blend(world, hydraulic_erosion(world["height"], drops=drops, capacity=self.capacity,
                                         seed=world.seed_for(self.name),
                                         relief=world.relief, wrap=world.wrap), self.mask)
 
@@ -219,7 +238,7 @@ class Rivers:
 
     Optionally carves ``height``, which is then clipped to [0, 1]. Water drains
     to the bool layer ``ocean`` if the world has one. ``threshold`` defaults to
-    0.4% of the land cells.
+    0.4% of the land cells, per region.
 
     If the world has a ``rainfall`` layer (see :class:`Climate`), ``flow`` counts
     rain instead of cells, so dry regions get fewer rivers. Rainfall averages 1
@@ -242,7 +261,7 @@ class Rivers:
                 raise ValueError("rainfall must be finite and >= 0")
         kw = dict(outlets=ocean, wrap=world.wrap)
         land = world.size ** 2 if ocean is None else int((~ocean).sum())
-        threshold = max(0.004 * land, 2.0) if self.threshold is None else self.threshold
+        threshold = max(0.004 * land / world.extent ** 2, 2.0) if self.threshold is None else self.threshold
         before = h = np.clip(world["height"], 0.0, 1.0)
         if self.carve:
             acc = flow_accumulation(h, rain, **kw)
@@ -299,11 +318,18 @@ class Pipeline:
         return out
 
 
-STEPS: dict[str, type] = {c.__name__: c for c in (Noise, Continents, Thermal, Hydraulic,
-                                                Ocean, Climate, Rivers, Biomes)}
+STEPS: dict[str, type] = {c.__name__: c for c in (Noise, Continents, Ranges, Thermal, Hydraulic, Ocean,
+                                                Fluvial, Climate, Rivers, Biomes)}
 
 
 def default_pipeline() -> Pipeline:
+    """Continents and mountain ranges carved by rivers, with climate and biomes."""
+    return Pipeline([Noise(), Continents(), Ranges(), Ocean(), Fluvial(),
+                     Hydraulic(capacity=0.5), Climate(), Rivers(carve=False), Biomes()])
+
+
+def classic_pipeline() -> Pipeline:
+    """Faster: erosion only touches up the noise, and rivers are carved in afterwards."""
     return Pipeline([Noise(), Continents(), Thermal(), Hydraulic(), Ocean(), Climate(),
                      Rivers(), Biomes()])
 

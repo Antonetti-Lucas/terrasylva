@@ -127,7 +127,7 @@ def test_steep_ground_is_rock_and_the_shore_is_a_beach():
     w = run(layers_world(const(20), const(0.5), h, ocean, sea=0.25, height_range=(0, 200)),
             noise=0.0)
     names = [b.name for b in ts.default_biome_table()]
-    assert names[w["biome"][10, 6]] == "beach"
+    assert names[w["biome"][10, 5]] == "beach"
     assert names[w["biome"][10, 36]] == "rock"
     assert names[w["biome"][10, 12]] not in ("rock", "ocean")
 
@@ -417,3 +417,18 @@ def test_cli_without_biomes_writes_none_of_them(tmp_path):
     cli_main(["generate", "--size", "48", "--seed", "3", "--land", "0.6", "--drops", "100",
               "-o", str(tmp_path)])
     assert not any((tmp_path / f).exists() for f in FILES)
+
+
+def test_low_plains_far_from_the_sea_are_not_beach():
+    n = 128
+    h = np.full((n, n), 0.501, np.float32)
+    h[:, :20] = 0.499
+    w = ts.World(size=n, sea_level=0.5, layers={
+        "height": h, "ocean": h < 0.5, "temperature": np.full((n, n), 20, np.float32),
+        "moisture": np.full((n, n), 0.45, np.float32)})
+    out = ts.Pipeline([ts.Biomes(noise=0)]).run(w)
+    names = [b.name for b in ts.Biomes().table]
+    beach = out["biome"] == names.index("beach")
+    assert beach[:, 20].all() and not beach[:, 25:].any()
+    img = ts.colorize(h, None, 0.5, None, ocean=w["ocean"]).astype(int)
+    assert img[64, 20, 0] > img[64, 60, 0] + 20

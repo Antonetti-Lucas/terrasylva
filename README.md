@@ -25,6 +25,8 @@ carving (512×512, seed 11, looping, 60% land).*
   per-biome weights and an RGBA splat map for ground textures.
 - **Swappable steps**: remove, reorder, replace or re-run any stage, and save the whole
   setup as a JSON recipe.
+- **River landscapes**: mountain ranges rise where plates collide while rivers carve them
+  down, so valleys, ridges and drainage basins come out of one process.
 - **Noise**: Perlin fBm, ridged multifractal, and domain warping. Deterministic per seed.
 - **Hydraulic erosion**: droplet simulation with inertia, sediment capacity, brush-based
   erosion and deposition. Mass-conserving, with a border margin so edges stay intact.
@@ -51,6 +53,8 @@ pip install -e ".[editor]"
 terrasylva editor            # or: terrasylva editor recipe.json
 ```
 
+*New world* starts from a preset: world map, continent, archipelago or region. *World size*
+puts more regions on the map; *Resolution* only adds detail; *Land* sets how much is sea.
 Move the sliders and the preview updates. Tick, untick, drag, add or remove steps; only
 the steps after a change run again. *Show* switches between landscape, biomes,
 temperature, rainfall and height, and *Repeat* draws copies around a looping world.
@@ -122,6 +126,16 @@ world = pipeline.run(world, start="rivers")
   steps need to be dataclasses. The CLI writes `recipe.json` next to its output, and
   `terrasylva run recipe.json -o out/` reproduces it.
 
+## World size
+
+![Three world maps](docs/worldmap.png)
+*The editor's "World map" preset, seeds 1, 5 and 9, at 768×768.*
+
+`World(extent=4)` holds 4×4 regions' worth of ranges, valleys, coasts and weather; `size` is
+only the number of cells. Raise both to keep the detail, e.g. `size=2048, extent=4`. Mountains
+keep their proportions, so a large world is flatter relative to its width (the editor draws
+it steeper). `Continents(scale=...)` still counts land masses across the whole world.
+
 ## Looping worlds
 
 ![The same seed tiled 2×2, without and with wrap](docs/looping.png)
@@ -131,6 +145,45 @@ A looping world has no border for water to leave by. Pass a bool `outlets` mask 
 `"ocean"` layer, which `Rivers` uses) to say where it drains; otherwise it drains to the
 lowest cell. Looping needs a whole-number noise `scale`. The exported OBJ is a single
 tile whose edges meet its neighbours exactly, so the game has to draw copies near the edge and move the player across.
+
+## River landscapes
+
+![Classic erosion and the river landscape](docs/fluvial.png)
+*Seed 42, 1024×1024, shading only. Left: `classic_pipeline()`. Right: `default_pipeline()`.*
+
+`Ranges` places converging plates and writes how fast the ground rises. `Fluvial` then
+solves the stream-power law `dh/dt = U - K A^m S` with hillslope creep, from a coarse grid
+to the full one, with rock hardness that varies. Run `Ocean` before it: rivers end at that
+coast. A light `Hydraulic(capacity=0.5)` adds fine detail. `terrasylva generate --fluvial`
+does the same from the command line. `classic_pipeline()` and `generate()` keep the faster
+method, in which erosion touches up noise and rivers are carved in afterwards.
+
+Compared with real elevation data (five 1024x1024 tiles at 53-74 m per cell: Alps, Andes,
+Appalachians, Himalaya, Pyrenees, from the Terrain Tiles dataset on AWS), with the same
+code on both. Generated values are means of seeds 3, 8 and 15, which were not used for
+tuning:
+
+| | Classic | Default | Real (min to max) |
+|---|---|---|---|
+| River profile concavity | 0.13 | 0.35 | 0.22 to 0.30 |
+| Hack exponent (basin shape) | 0.45 | 0.48 | 0.49 to 0.57 |
+| Median slope | 18.9° | 24.6° | 10.2° to 27.7° |
+| Steepest 1% of slopes | 55.6° | 49.2° | 31.9° to 56.4° |
+| Relief in 64 vs 16 cells | 3.37 | 2.45 | 2.40 to 2.77 |
+| Hypsometric integral (128 cells) | 0.49 | 0.36 | 0.38 to 0.50 |
+| Curvature skew (sharp ridges < 0) | -1.31 | 0.24 | -0.42 to 0.00 |
+| Roughness (curvature / slope) | 3.77 | 1.06 | 0.79 to 2.01 |
+| Spectral slope, coarse (6-40 cycles) | -3.18 | -2.92 | -3.42 to -3.18 |
+| Spectral slope, fine (40-250 cycles) | -2.86 | -3.33 | -5.14 to -3.58 |
+| Land in closed pits | 5.2% | 0.4% | 0.7% to 2.6% |
+
+Over twelve such measures the average distance outside the real range, in range widths, is
+0.72 for classic and 0.24 for the default. Five of the twelve fall inside it (classic: four),
+so this is closer, not there yet. Five mountain areas are a small sample, and the generated
+maps also contain plains and coasts.
+
+It costs time: 1.7, 4.7, 12.1 and 46.0 s at 256, 512, 1024 and 2048, against 0.4, 1.5, 5.7
+and 25.2 s for the classic pipeline (single runs, climate and biomes included).
 
 ## Oceans and continents
 
@@ -251,8 +304,14 @@ produce the stripes. Carving leaves lake beds untouched.
 ## Known limitations
 
 - Square maps only, generated whole: no chunked or infinite generation.
-- Erosion ignores the sea, so it also shapes the sea floor, and there are no beaches,
-  waves or river deltas.
+- Erosion before `Ocean` also shapes the sea floor; after it, the coast and sea floor are
+  fixed and eroded material that reaches the sea is lost. There are no deltas, floodplains
+  built from sediment, glaciers, volcanoes or layered rock.
+- River landscapes rarely have lakes, because rivers have had time to drain them.
+  Valleys are all of similar size: real ranges also have a few much larger ones with flat
+  floors, and folds that give them a direction. Coasts are smoother than real ones, plains are still finely dissected, and plates
+  only place ranges: they don't move.
+- `Fluvial` ignores the `rainfall` layer, since climate is computed from the finished land.
 - Seas larger than `min_area` count as ocean even if enclosed by land.
 - Steps after `Ocean` that change heights need `Ocean` to run again. With the default
   `land=`, that also recomputes the sea level; pass `level=` to keep it.
@@ -294,6 +353,8 @@ produce the stripes. Carving leaves lake beds untouched.
 - [x] World/pipeline core with recipes, units and independent seeds
 - [x] Looping worlds
 - [x] Oceans and continents, with rivers draining to the sea, and real water in previews
+- [x] Plate-driven ranges and river-carved landscapes
+- [ ] Sediment (floodplains, deltas), layered rock, larger valleys
 - [x] Climate (temperature, wind, rain shadows) and biome maps
 - [ ] Wind that varies across the map, seasons, and evaporation that depends on temperature
 - [x] Visual editor (desktop, PySide6): sliders, 3D preview, step list, save, load, export
@@ -309,7 +370,7 @@ produce the stripes. Carving leaves lake beds untouched.
 pytest
 ```
 
-The suite covers determinism, looping, pipeline and recipe behaviour, the editor, mass conservation, border safety, flow conservation,
+The suite covers determinism, looping, pipeline and recipe behaviour, the editor, river landscapes, mass conservation, border safety, flow conservation,
 pit filling, acyclic routing, lake detection, and export formats. For climate and biomes it
 checks shifted worlds against shifted results, colder air at altitude, rain shadows that
 reverse with the wind, rain conserved along the drainage, weights and splat sums, custom and

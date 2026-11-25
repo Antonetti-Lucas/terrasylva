@@ -7,7 +7,8 @@ import time
 
 from . import export, render
 from .biomes import Biomes, biome_legend, default_biome_table
-from .world import (Climate, Continents, Hydraulic, Noise, Ocean, Pipeline, Rivers, Thermal,
+from .world import (Climate, Continents, Fluvial, Hydraulic, Noise, Ocean, Pipeline, Ranges, Rivers,
+                    Thermal,
                     World, load_recipe, save_recipe)
 
 
@@ -31,6 +32,11 @@ def _build_parser() -> argparse.ArgumentParser:
                    help="fraction of land (0-1); adds continents and an ocean")
     g.add_argument("--continents", type=float, default=2.0,
                    help="continent frequency: 2 = a few large ones, 5 = archipelago")
+    g.add_argument("--fluvial", action="store_true",
+                   help="mountain ranges and valleys carved by rivers (slower, more realistic; "
+                        "implies --land 0.6 and ignores --thermal and --no-carve)")
+    g.add_argument("--extent", type=int, default=1,
+                   help="regions across the world; raise --size along with it")
     g.add_argument("--cell-size", type=float, default=1.0, help="metres per cell")
     g.add_argument("--biomes", action="store_true",
                    help="add climate and biomes (temperature, rainfall, biome and splat maps)")
@@ -97,20 +103,24 @@ def main(argv: list[str] | None = None) -> int:
         world, pipeline = load_recipe(args.recipe)
     else:
         world = World(size=args.size, seed=args.seed, cell_size=args.cell_size,
-                      wrap=args.wrap)
+                      wrap=args.wrap, extent=args.extent)
         steps = [Noise(scale=args.scale, octaves=args.octaves, ridged=args.ridged,
                        warp=args.warp)]
+        if args.fluvial and args.land is None:
+            args.land = 0.6
         if args.land is not None:
             steps.append(Continents(scale=args.continents))
-        if args.thermal > 0:
+        if args.fluvial:
+            steps += [Ranges(), Ocean(land=args.land), Fluvial()]
+        elif args.thermal > 0:
             steps.append(Thermal(iterations=args.thermal))
         if args.drops is None or args.drops > 0:
-            steps.append(Hydraulic(drops=args.drops))
-        if args.land is not None:
+            steps.append(Hydraulic(drops=args.drops, capacity=0.5 if args.fluvial else 4.0))
+        if args.land is not None and not args.fluvial:
             steps.append(Ocean(land=args.land))
         if args.biomes:
             steps.append(Climate())
-        steps.append(Rivers(carve=not args.no_carve, threshold=args.river_threshold))
+        steps.append(Rivers(carve=not (args.no_carve or args.fluvial), threshold=args.river_threshold))
         if args.biomes:
             steps.append(Biomes())
         pipeline = Pipeline(steps)

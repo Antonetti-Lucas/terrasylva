@@ -21,7 +21,8 @@ if TYPE_CHECKING:  # world.py imports this module, so only import it for type ch
     from .world import World
 
 # one "unit" of distance outside a range, per property
-_UNIT = {"temperature": 10.0, "moisture": 0.2, "slope": 15.0, "height": 0.15}
+_UNIT = {"temperature": 10.0, "moisture": 0.2, "slope": 15.0, "height": 0.15,
+         "shore": 0.01}
 _SPLAT = ("rock", "grass", "sand", "snow")
 
 
@@ -55,6 +56,7 @@ class Biome:
     * ``slope``: degrees.
     * ``height``: 0 at sea level, 1 at the highest point, down to -1 at the
       deepest sea floor.
+    * ``shore``: distance to the ocean as a fraction of a region's width, 0 for the first two cells of land; 1 without an ocean.
 
     ``water`` marks biomes of the open ocean: they are only considered for ocean
     cells, and every other biome only for land (if the table has none of one
@@ -68,6 +70,7 @@ class Biome:
     moisture: tuple[float | None, float | None] | None = None
     slope: tuple[float | None, float | None] | None = None
     height: tuple[float | None, float | None] | None = None
+    shore: tuple[float | None, float | None] | None = None
     water: bool = False
     splat: tuple[float, float, float, float] = (0.0, 1.0, 0.0, 0.0)
 
@@ -103,7 +106,7 @@ def default_biome_table() -> tuple[Biome, ...]:
         B("ocean", (38, 84, 138), water=True, splat=(0, 0, 1, 0)),
         B("rock", (128, 120, 112), slope=(38, None), splat=(1, 0, 0, 0)),
         B("snow", (244, 247, 250), temperature=(None, -8), splat=(0, 0, 0, 1)),
-        B("beach", (222, 205, 150), height=(None, 0.02), temperature=(2, None),
+        B("beach", (222, 205, 150), height=(None, 0.04), shore=(None, 0.006), temperature=(2, None),
           splat=(0, 0, 1, 0)),
         B("desert", (224, 196, 128), temperature=(12, None), moisture=(None, 0.3),
           splat=(0.1, 0, 0.9, 0)),
@@ -124,7 +127,7 @@ def biome_legend(table: Sequence[Biome]) -> list[dict]:
     """Plain-data description of a table, for ``biomes.json``."""
     return [{"index": i, "name": b.name, "color": list(b.color), "water": b.water,
              "temperature": b.temperature, "moisture": b.moisture, "slope": b.slope,
-             "height": b.height, "splat": dict(zip(_SPLAT, b.splat))}
+             "height": b.height, "shore": b.shore, "splat": dict(zip(_SPLAT, b.splat))}
             for i, b in enumerate(table)]
 
 
@@ -213,7 +216,7 @@ class Biomes:
             before they are matched to the table (same units), so borders are not
             smooth contours. 0 turns it off.
         wet_bonus: moisture added right beside a river or lake, fading with distance.
-        wet_reach: how far that bonus reaches, as a fraction of the map width.
+        wet_reach: how far that bonus reaches, as a fraction of a region's width.
     """
 
     table: tuple = field(default_factory=default_biome_table)
@@ -251,7 +254,7 @@ class Biomes:
         moisture = np.asarray(world["moisture"], dtype=np.float32).copy()
         if self.noise > 0:
             for arr, key in ((temperature, "temperature"), (moisture, "moisture")):
-                field_ = fbm(n, seed=world.seed_for(f"{self.name}/{key}"), scale=6.0, octaves=2,
+                field_ = fbm(n, seed=world.seed_for(f"{self.name}/{key}"), scale=6.0 * world.extent, octaves=2,
                              warp=0.2, wrap=world.wrap)
                 arr += (2.0 * self.noise * _UNIT[key]) * (field_.astype(np.float32) - 0.5)
         fresh = np.zeros((n, n), dtype=bool)
@@ -259,7 +262,7 @@ class Biomes:
             if key in world:
                 fresh |= np.asarray(world[key]).astype(bool)
         if self.wet_bonus > 0 and fresh.any():
-            reach = max(self.wet_reach * n, 1e-6)
+            reach = max(self.wet_reach * n / world.extent, 1e-6)
             near = _distance(fresh, bool(world.wrap))
             moisture += (self.wet_bonus * np.exp(-near / reach)).astype(np.float32)
 
@@ -270,6 +273,8 @@ class Biomes:
             "moisture": moisture,
             "slope": np.degrees(slope_of(h, relief=world.relief, wrap=world.wrap)).astype(np.float32),
             "height": np.where(h >= sea, above, below).astype(np.float32),
+            "shore": np.clip((_distance(ocean, bool(world.wrap)) - 2.0) / n * world.extent, 0.0, 1.0).astype(np.float32)
+            if ocean.any() else np.ones((n, n), dtype=np.float32),
         }
         weights = self._weights(fields, ocean)
         splat_rows = np.array([b.splat for b in self.table], dtype=np.float64)

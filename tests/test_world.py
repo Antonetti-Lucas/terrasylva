@@ -419,3 +419,30 @@ def test_wrapped_obj_tiles_meet_exactly(tmp_path, size, res):
     for a in (v[..., 1], vn[..., 0], vn[..., 1], vn[..., 2]):
         assert np.array_equal(a[:, 0], a[:, -1]) and np.array_equal(a[0], a[-1])
     assert v[..., 0].min() == 0 and v[..., 0].max() == 1
+
+
+# --------------------------------------------------------------- extent
+def test_extent_one_changes_nothing_and_larger_worlds_hold_more():
+    a = ts.Pipeline([ts.Noise()]).run(ts.World(size=96, seed=3, wrap=True))
+    assert np.array_equal(a["height"], ts.Pipeline([ts.Noise()]).run(
+        ts.World(size=96, seed=3, wrap=True, extent=1))["height"])
+    b = ts.Pipeline([ts.Noise()]).run(ts.World(size=96, seed=3, wrap=True, extent=4))
+    rough = lambda h: np.abs(np.diff(h, axis=1)).mean()  # noqa: E731
+    assert rough(b["height"]) > 2 * rough(a["height"]) and seam_ratio(b["height"]) < 1.6
+    assert b.relief == pytest.approx(a.relief / 4)
+
+
+@pytest.mark.parametrize("wrap", [True, False])
+def test_default_pipeline_on_a_large_extent(wrap):
+    w = ts.default_pipeline().run(ts.World(size=128, seed=1, wrap=wrap, extent=4))
+    for name, layer in w.layers.items():
+        assert np.isfinite(layer.astype(float)).all(), name
+    assert w["rivers"].any()
+    if wrap:
+        assert seam_ratio(w["height"]) < 1.8
+
+
+@pytest.mark.parametrize("extent", [0, 1.5, -2])
+def test_extent_is_validated(extent):
+    with pytest.raises(ValueError, match="extent"):
+        ts.World(extent=extent)

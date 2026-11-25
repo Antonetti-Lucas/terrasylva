@@ -13,6 +13,7 @@ from typing import TYPE_CHECKING
 import numpy as np
 from numba import njit
 
+from ._grid import area_matrix, blur_matrix, linear_matrix
 from .hydrology import detect_lakes
 from .noise import fbm
 
@@ -26,38 +27,6 @@ _AIR_SMOOTHING = 0.012
 
 
 # ------------------------------------------------------------------ resampling
-def _area_matrix(n: int, r: int) -> np.ndarray:
-    """(r, n) matrix averaging ``n`` cells into ``r`` by exact area overlap."""
-    s = n / r
-    lo = np.arange(r)[:, None] * s
-    hi = lo + s
-    j = np.arange(n)[None, :]
-    overlap = np.clip(np.minimum(hi, j + 1) - np.maximum(lo, j), 0.0, None)
-    return overlap / s
-
-
-def _linear_matrix(n: int, r: int, wrap: bool) -> np.ndarray:
-    """(n, r) matrix interpolating ``r`` cell centres linearly onto ``n`` cells."""
-    q = (np.arange(n) + 0.5) * (r / n) - 0.5
-    i0 = np.floor(q).astype(np.int64)
-    f = q - i0
-    m = np.zeros((n, r))
-    rows = np.arange(n)
-    for idx, weight in ((i0, 1.0 - f), (i0 + 1, f)):
-        idx = idx % r if wrap else np.clip(idx, 0, r - 1)
-        np.add.at(m, (rows, idx), weight)
-    return m
-
-
-def _blur_matrix(n: int, sigma: float, wrap: bool) -> np.ndarray:
-    """(n, n) Gaussian blur with rows summing to 1."""
-    d = np.abs(np.arange(n)[:, None] - np.arange(n)[None, :])
-    if wrap:
-        d = np.minimum(d, n - d)
-    m = np.exp(-0.5 * (d / max(sigma, 1e-6)) ** 2)
-    return m / m.sum(axis=1, keepdims=True)
-
-
 # ---------------------------------------------------------------- moisture sim
 @njit(cache=True, nogil=True)
 def _sample(a, y, x, wrap, fill):
@@ -167,12 +136,15 @@ class Climate:
     Rainfall is the output of a moisture simulation on a grid of at most
     ``grid`` cells per side, interpolated back up:
 
+    Distances are per region, so a world with a larger ``extent`` dries out more
+    towards its interior.
+
     * ``wind``: where the wind blows from, degrees clockwise from north
       (270 is a westerly, air moving east).
     * ``evaporation``: how fast air over open water (ocean, lakes) takes up
-      moisture, in e-folds per map width.
+      moisture, in e-folds per region width.
     * ``rain_out``: share of moisture that falls as ordinary rain, in e-folds
-      per map width. It is also what makes a looping simulation converge to a
+      per region width. It is also what makes a looping simulation converge to a
       single answer, so it must be positive.
     * ``orographic``: extra rain as the air rises. 1.5 removes about 78% of the
       moisture over a climb from sea level to the highest peak.
@@ -223,7 +195,7 @@ class Climate:
         rows = np.arange(n, dtype=np.float64)[:, None] * np.ones((1, n))
         v = rows / n if world.wrap else rows / (n - 1)
         if self.wobble > 0:
-            noise = fbm(n, seed=world.seed_for(self.name + "/temperature"), scale=3.0,
+            noise = fbm(n, seed=world.seed_for(self.name + "/temperature"), scale=3.0 * world.extent,
                         octaves=4, warp=0.3, wrap=world.wrap)
             v = v + self.wobble * 2.0 * (noise.astype(np.float64) - 0.5)
         if world.wrap:
@@ -241,20 +213,20 @@ class Climate:
         water = lakes if ocean is None else lakes | ocean
         relief = np.clip((np.maximum(height, sea) - sea) / max(1.0 - sea, 1e-9), 0.0, 1.0)
         if r < n:
-            down = _area_matrix(n, r)
-            up = _linear_matrix(n, r, world.wrap)
+            down = area_matrix(n, r)
+            up = linear_matrix(n, r, world.wrap)
             relief_c = down @ relief @ down.T
             water_c = down @ water.astype(np.float64) @ down.T
         else:
             relief_c, water_c = relief, water.astype(np.float64)
         # single-cell roughness must not count as mountains, or small maps get speckled
-        blur = _blur_matrix(r, _AIR_SMOOTHING * r, world.wrap)
+        blur = blur_matrix(r, _AIR_SMOOTHING * r / world.extent, world.wrap)
         relief_c = blur @ relief_c @ blur.T
         ux, uy = _wind_vector(self.wind)
         _, precip = _simulate(np.ascontiguousarray(relief_c), np.ascontiguousarray(water_c),
-                              ux, uy, bool(world.wrap), float(self.rain_out),
-                              float(self.orographic), float(self.evaporation),
-                              float(self.spread) * np.sqrt(2.0 * r), _INFLOW,
+                              ux, uy, bool(world.wrap), float(self.rain_out) * world.extent,
+                              float(self.orographic), float(self.evaporation) * world.extent,
+                              float(self.spread) / world.extent * np.sqrt(2.0 * r), _INFLOW,
                               2000, 1e-7)
         if r < n:
             precip = np.clip(up @ precip @ up.T, 0.0, None)

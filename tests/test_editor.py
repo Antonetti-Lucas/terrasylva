@@ -12,7 +12,9 @@ from terrasylva.world import STEPS
 
 
 def doc(**kw):
-    return dataclasses.replace(session.default_document(), size=96, **kw)
+    # the classic steps are quick and don't depend on each other as much
+    items = tuple(Item(s) for s in ts.classic_pipeline().steps)
+    return dataclasses.replace(session.default_document(), **{"size": 96, "items": items, **kw})
 
 
 def kinds(d):
@@ -138,12 +140,13 @@ def test_dirty_tracks_saved_state():
 # ------------------------------------------------------------------ files
 def test_save_load_roundtrip_keeps_disabled_steps(tmp_path):
     path = str(tmp_path / "w.json")
-    d = doc(seed=5, cell_size=3.0, relief=0.15, base_height=-40.0, wrap=False)
+    d = doc(seed=5, cell_size=3.0, relief=0.15, base_height=-40.0, wrap=False,
+            extent=3)
     d = session.replace_item(d, 2, Item(d.items[2].step, enabled=False))
     session.save(path, d)
     back = session.load(path)
     assert back.items == d.items
-    assert (back.size, back.seed, back.cell_size, back.wrap) == (96, 5, 3.0, False)
+    assert (back.size, back.seed, back.cell_size, back.wrap, back.extent) == (96, 5, 3.0, False, 3)
     assert back.relief == pytest.approx(0.15) and back.base_height == -40.0
 
 
@@ -378,3 +381,50 @@ def test_auto_control_toggles_none(app, window):
     assert window.doc.items[row].step.drops == 300_000
     control.auto.setChecked(True)
     assert window.doc.items[row].step.drops is None
+
+
+def test_default_document_is_the_default_pipeline():
+    assert session.default_document().steps() == ts.default_pipeline().steps
+    w = Generator().run(session.default_document(), 64)
+    assert {"uplift", "ocean", "biome", "rivers"} <= w.layers.keys()
+
+
+@pytest.mark.parametrize("name", sorted(session.PRESETS))
+def test_presets_generate(name):
+    d = session.preset(name, seed=7)
+    assert d.seed == 7 and d.extent == session.PRESETS[name][1]["extent"]
+    w = Generator().run(d, 96)
+    land = d.items[session.ocean_index(d)].step.land
+    assert 1 - w["ocean"].mean() == pytest.approx(land, abs=0.08)
+
+
+def test_preview_keeps_extent_and_slopes():
+    d = session.preset("World map")
+    small, full = d.world(128), d.world()
+    assert small.extent == full.extent == 4
+    assert small.relief / small.size == pytest.approx(full.relief / full.size)
+
+
+def test_land_slider_in_world_panel_and_ocean_step_stay_in_step(app, window):
+    row = kinds(window.doc).index("Ocean")
+    window.list.setCurrentRow(row)
+    window.world_form.controls["land"].box.setValue(0.25)
+    assert window.doc.items[row].step.land == pytest.approx(0.25)
+    assert window.step_form.controls["land"].box.value() == pytest.approx(0.25)
+    window.step_form.controls["land"].box.setValue(0.7)
+    assert window.world_form.controls["land"].box.value() == pytest.approx(0.7)
+    window.remove_step()
+    assert "land" not in window.world_form.controls
+    window.undo()
+    assert "land" in window.world_form.controls
+    wait(app, window)
+
+
+def test_preset_is_undoable(app, window):
+    before = window.doc
+    window.use_preset("Archipelago")
+    assert window.doc.extent == 2 and window.doc.seed == before.seed
+    window.undo()
+    assert window.doc == before
+    window.view.top_view()
+    wait(app, window)

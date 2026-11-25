@@ -32,6 +32,7 @@ class TerrainView(QOpenGLWidget):
         self.setMinimumSize(320, 240)
         self.camera = scene.Camera()
         self.lift = 1.0
+        self._boost = 1.0            # large worlds are drawn steeper, or they look flat
         self.tiled = False
         self.error: str | None = None
         self._ctx = None
@@ -44,6 +45,7 @@ class TerrainView(QOpenGLWidget):
     # ------------------------------------------------------------ content
     def show_world(self, world: World, pixels: np.ndarray) -> None:
         self._wrap = world.wrap
+        self._boost = world.extent ** 0.5
         self._mesh = scene.mesh(world)
         self.show_colours(pixels)
 
@@ -57,6 +59,11 @@ class TerrainView(QOpenGLWidget):
 
     def set_tiled(self, tiled: bool) -> None:
         self.tiled = tiled
+        self.update()
+
+    def top_view(self) -> None:
+        self.camera = scene.Camera()
+        self.camera.yaw, self.camera.pitch, self.camera.distance = 0.0, 89.0, 1.45
         self.update()
 
     def reset_camera(self) -> None:
@@ -107,7 +114,7 @@ class TerrainView(QOpenGLWidget):
         aspect = max(self.width(), 1) / max(self.height(), 1)
         mvp = self.camera.matrix(aspect)
         self._program["mvp"].write(mvp.T.astype("f4").tobytes())
-        self._program["lift"].value = self.lift
+        self._program["lift"].value = self.lift * self._boost
         self._texture.use(0)
         around = (-1, 0, 1) if self.tiled and self._wrap else (0,)
         for dz in around:

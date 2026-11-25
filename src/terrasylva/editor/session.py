@@ -31,7 +31,8 @@ class Document:
     size: int = 1024
     seed: int = 1
     cell_size: float = 2.0
-    relief: float = 0.1          # height range as a fraction of the world's width
+    extent: int = 1              # regions across the world
+    relief: float = 0.1          # height range as a fraction of a region's width
     base_height: float = 0.0     # metres at height 0
     wrap: bool = True
     items: tuple[Item, ...] = ()
@@ -41,7 +42,9 @@ class Document:
         n = self.size if size is None else size
         width = self.size * self.cell_size
         return World(size=n, seed=self.seed, cell_size=width / n, wrap=self.wrap,
-                     height_range=(self.base_height, self.base_height + self.relief * width))
+                     extent=self.extent,
+                     height_range=(self.base_height, self.base_height
+                                                     + self.relief * width / self.extent))
 
     def steps(self, size: int | None = None) -> list:
         """Enabled steps, with per-cell counts rescaled to ``size``."""
@@ -62,6 +65,42 @@ class Document:
 
 def default_document() -> Document:
     return Document(items=tuple(Item(s) for s in default_pipeline().steps))
+
+
+def _adjust(doc: Document, changes: dict, **world) -> Document:
+    """Change fields of the first step of each named kind, and world settings."""
+    items = list(doc.items)
+    for kind, values in changes.items():
+        for i, item in enumerate(items):
+            if type(item.step).__name__ == kind:
+                items[i] = Item(replace(item.step, **values), item.enabled)
+                break
+    return replace(doc, items=tuple(items), **world)
+
+
+# every preset starts from the default steps and keeps the seed
+PRESETS = {
+    "World map": ({"Continents": {"scale": 2.0, "strength": 0.7}, "Ocean": {"land": 0.33},
+                   "Ranges": {"coast": 0.2}},
+                  dict(extent=4, size=2048, cell_size=8.0)),
+    "Continent": ({"Ocean": {"land": 0.5}}, dict(extent=2, size=1024, cell_size=4.0)),
+    "Archipelago": ({"Continents": {"scale": 5.0}, "Ocean": {"land": 0.25},
+                     "Ranges": {"coast": 0.3}}, dict(extent=2, size=1024, cell_size=4.0)),
+    "Region": ({}, dict(extent=1, size=1024, cell_size=2.0)),
+}
+
+
+def preset(name: str, seed: int = 1) -> Document:
+    changes, world = PRESETS[name]
+    return _adjust(default_document(), changes, seed=seed, **world)
+
+
+def ocean_index(doc: Document) -> int | None:
+    """Row of the step that decides how much land there is."""
+    for i, item in enumerate(doc.items):
+        if item.enabled and type(item.step).__name__ == "Ocean" and item.step.level is None:
+            return i
+    return None
 
 
 def replace_item(doc: Document, index: int, item: Item) -> Document:
@@ -192,7 +231,8 @@ def save(path: str, doc: Document) -> None:
     world = doc.world()
     data = {
         "world": {"size": world.size, "seed": world.seed, "cell_size": world.cell_size,
-                  "height_range": world.height_range, "wrap": world.wrap},
+                  "height_range": world.height_range, "wrap": world.wrap,
+                  "extent": world.extent},
         "steps": [{"step": type(i.step).__name__, **asdict(i.step),
                    **({} if i.enabled else {"enabled": False})} for i in doc.items],
     }
@@ -221,5 +261,6 @@ def load(path: str) -> Document:
         raise ValueError(f"cannot open {path}: {e}") from e
     lo, hi = world.height_range
     return Document(size=world.size, seed=world.seed, cell_size=world.cell_size,
-                    relief=(hi - lo) / (world.size * world.cell_size), base_height=lo,
+                    extent=world.extent,
+                    relief=(hi - lo) / (world.size * world.cell_size) * world.extent, base_height=lo,
                     wrap=world.wrap, items=tuple(items))

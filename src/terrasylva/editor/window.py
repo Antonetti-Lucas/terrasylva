@@ -21,7 +21,8 @@ from . import params, scene, session
 from .view import TerrainView
 from .widgets import ParamForm
 
-_STEP_LABELS = {"Noise": "Base terrain", "Continents": "Continents", "Thermal": "Slope erosion",
+_STEP_LABELS = {"Noise": "Base terrain", "Continents": "Continents",
+                "Ranges": "Mountain ranges", "Fluvial": "River landscape", "Thermal": "Slope erosion",
                 "Hydraulic": "Water erosion", "Ocean": "Ocean", "Climate": "Climate",
                 "Rivers": "Rivers and lakes", "Biomes": "Biomes"}
 _FILTER = "terrasylva recipe (*.json)"
@@ -76,7 +77,7 @@ class MainWindow(QMainWindow):
 
     def __init__(self):
         super().__init__()
-        self.history = session.History(session.default_document())
+        self.history = session.History(session.preset("World map"))
         self.path: str | None = None
         self.result = None           # last successful result
         self._running = None         # job in progress
@@ -126,16 +127,26 @@ class MainWindow(QMainWindow):
         self.act_full = self._action("Show final size", self.generate_full, "F5",
                                      "Generate and show the world at its final size")
         self.act_camera = self._action("Reset camera", self.view.reset_camera, "Home")
+        self.act_top = self._action("Map view", self.view.top_view, "M", "Look straight down")
+        self.act_3d = self._action("3D view", self.view.reset_camera, "N")
         file = self.menuBar().addMenu("&File")
         file.addActions([self.act_new, self.act_open, self.act_save, self.act_save_as,
                          self.act_export])
         edit = self.menuBar().addMenu("&Edit")
         edit.addActions([self.act_undo, self.act_redo, self.act_random])
         view = self.menuBar().addMenu("&View")
-        view.addActions([self.act_full, self.act_camera])
+        view.addActions([self.act_full, self.act_top, self.act_3d, self.act_camera])
         bar = QToolBar("Main")
         bar.setObjectName("main")
         bar.setMovable(False)
+        self.presets = QToolButton()
+        self.presets.setText("New world")
+        self.presets.setPopupMode(QToolButton.ToolButtonPopupMode.InstantPopup)
+        menu = QMenu(self.presets)
+        for name in session.PRESETS:
+            menu.addAction(name, lambda n=name: self.use_preset(n))
+        self.presets.setMenu(menu)
+        bar.addWidget(self.presets)
         bar.addActions([self.act_open, self.act_save, self.act_export])
         bar.addSeparator()
         bar.addActions([self.act_undo, self.act_redo, self.act_random])
@@ -147,12 +158,13 @@ class MainWindow(QMainWindow):
         bar.addWidget(self.mode)
         bar.addWidget(QLabel("  Preview "))
         self.preview_size = QComboBox()
-        for n in (128, 256, 512):
+        for n in (128, 256, 512, 1024):
             self.preview_size.addItem(str(n), n)
-        self.preview_size.setCurrentIndex(1)
+        self.preview_size.setCurrentIndex(2)
         self.preview_size.currentIndexChanged.connect(lambda _: self.generate_preview())
         bar.addWidget(self.preview_size)
         bar.addAction(self.act_full)
+        bar.addActions([self.act_top, self.act_3d])
         bar.addSeparator()
         bar.addWidget(QLabel(" Exaggerate "))
         self.lift = QSlider(Qt.Orientation.Horizontal)
@@ -252,17 +264,24 @@ class MainWindow(QMainWindow):
             self.list.addItem(entry)
         if self.list.count():
             self.list.setCurrentRow(min(row, self.list.count() - 1))
-        values = {p.field: getattr(self.doc, p.field) for p in params.WORLD}
-        # widen ranges for values that came from a file
-        fields = [p if p.kind == "bool" else dataclasses.replace(
-            p, low=min(p.low, values[p.field]), high=max(p.high, values[p.field]))
-            for p in params.WORLD]
-        self.world_form = ParamForm(fields, values)
-        self.world_form.changed.connect(self._world_changed)
-        self._swap(self.world_layout, self.world_form)
+        self._show_world()
         self._loading = False
         self._show_params()
         self._update_titles()
+
+    def _show_world(self) -> None:
+        row = session.ocean_index(self.doc)
+        values = {p.field: getattr(self.doc, p.field, None) for p in params.WORLD}
+        if row is not None:
+            values["land"] = self.doc.items[row].step.land
+        shown = [p for p in params.WORLD if values[p.field] is not None]
+        # widen ranges for values that came from a file
+        fields = [p if p.kind == "bool" else dataclasses.replace(
+            p, low=min(p.low, values[p.field]), high=max(p.high, values[p.field]))
+            for p in shown]
+        self.world_form = ParamForm(fields, values)
+        self.world_form.changed.connect(self._world_changed)
+        self._swap(self.world_layout, self.world_form)
 
     @staticmethod
     def _swap(layout, widget) -> None:
@@ -297,6 +316,15 @@ class MainWindow(QMainWindow):
 
     # -------------------------------------------------------------- edits
     def _world_changed(self, field, value):
+        if field == "land":
+            row = session.ocean_index(self.doc)
+            item = self.doc.items[row]
+            step = dataclasses.replace(item.step, land=float(value))
+            self.edit(session.replace_item(self.doc, row, session.Item(step, item.enabled)),
+                      ("world", "land"), rebuild=False)
+            if self.list.currentRow() == row:
+                self._show_params()
+            return
         self.edit(dataclasses.replace(self.doc, **{field: value}), ("world", field), rebuild=False)
 
     def _step_changed(self, row, field, value):
@@ -304,6 +332,8 @@ class MainWindow(QMainWindow):
         step = dataclasses.replace(item.step, **{field: params.coerce(item.step, field, value)})
         self.edit(session.replace_item(self.doc, row, session.Item(step, item.enabled)),
                   (row, field), rebuild=False)
+        if type(step).__name__ == "Ocean":
+            self._show_world()
 
     def _item_changed(self, entry):
         if self._loading:
@@ -312,6 +342,8 @@ class MainWindow(QMainWindow):
         item = self.doc.items[row]
         on = entry.checkState() == Qt.CheckState.Checked
         self.edit(session.replace_item(self.doc, row, session.Item(item.step, on)), rebuild=False)
+        if type(item.step).__name__ == "Ocean":
+            self._show_world()
 
     def _rows_moved(self):
         order = [self.list.item(i).data(Qt.ItemDataRole.UserRole) for i in range(self.list.count())]
@@ -325,6 +357,9 @@ class MainWindow(QMainWindow):
         row = self.list.currentRow()
         if 0 <= row < len(self.doc.items):
             self.edit(session.remove_step(self.doc, row))
+
+    def use_preset(self, name):
+        self.edit(session.preset(name, self.doc.seed))
 
     def random_seed(self):
         self.edit(dataclasses.replace(self.doc, seed=random.SystemRandom().randrange(1_000_000)))
@@ -382,9 +417,11 @@ class MainWindow(QMainWindow):
                 QMessageBox.warning(self, "Export failed", result["error"])
         elif not result["cancelled"]:
             self.result = result
-            self.view.show_world(result["world"], result["pixels"])
+            world = result["world"]
+            self.view.show_world(world, result["pixels"])
             done = f"Exported to {job['folder']}" if job["folder"] else "Ready"
-            self.message.setText(f"{done} · {job['size']}×{job['size']} in {result['seconds']:.1f} s")
+            self.message.setText(f"{done} · {job['size']}×{job['size']} in {result['seconds']:.1f} s"
+                                 f" · {world.size * world.cell_size / 1000:.1f} km across")
             if job["mode"] != self.mode.currentText():
                 self.recolour()
         if self._queued is not None:
@@ -419,7 +456,7 @@ class MainWindow(QMainWindow):
 
     def new(self):
         if self._confirm_discard():
-            self._load(session.default_document(), None)
+            self._load(session.preset("World map"), None)
 
     def open(self):
         if not self._confirm_discard():

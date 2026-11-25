@@ -9,6 +9,7 @@ description = "Procedural worlds with river-carved terrain, oceans, climate and 
 readme = "README.md"
 requires-python = ">=3.10"
 license = { text = "MIT" }
+authors = [{ name = "Lucas Oliveira Antonetti" }]
 dependencies = ["numpy>=1.24", "numba>=0.58", "pillow>=10.0"]
 
 [project.optional-dependencies]

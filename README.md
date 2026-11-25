@@ -55,8 +55,8 @@ temperature, rainfall and height, and *Repeat* draws copies around a looping wor
 *Export* generates at the final size and writes the same files as the command line. Saved
 recipes also run with `terrasylva run`. Drag to orbit, right-drag to move, scroll to zoom.
 
-Editor limits: no sculpting brush and no biome table editing yet (recipes keep custom
-tables). The preview is smaller than the final world, so lakes and small rivers differ;
+Editor limits: no sculpting brush, and biome tables are edited in recipes or Python. The
+preview is smaller than the final world, so lakes and small rivers differ;
 use *Show final size* to check. A running step finishes before a change takes effect.
 
 ## Usage
@@ -375,11 +375,12 @@ produce the stripes. Carving leaves lake beds untouched.
 - [x] Climate (temperature, wind, rain shadows) and biome maps
 - [ ] Wind that varies across the map, seasons, and evaporation that depends on temperature
 - [x] Visual editor (desktop, PySide6): sliders, 3D preview, step list, save, load, export
-- [ ] Editor: sculpting brush, biome table editing, standalone .exe
-- [ ] Godot import example
-- [ ] Generic object placement (optional, works with your own assets)
-- [ ] Cave networks with entrance masks (optional)
-- [ ] Simple trees (optional)
+- [ ] Documented file formats and a minimal Godot import example
+- [ ] Basic object placement (points for your own assets)
+- [ ] Faster generation, automatic tests
+
+This package makes one complete map at a time, and that stays free under the MIT license.
+Work on walkable open worlds and hand editing happens in a separate project.
 
 ## Tests
 

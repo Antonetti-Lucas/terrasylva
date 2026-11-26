@@ -25,7 +25,8 @@ The project is young (0.1): no engine import has been tested yet, and the API ma
   per-biome weights and an RGBA splat map for ground textures.
 - **Looping worlds**: `wrap=True` makes everything continue across all four edges.
 - **Swappable steps**: remove, reorder, replace or re-run any stage, and save the whole
-  setup as a JSON recipe. Deterministic per seed.
+  setup as a JSON recipe. Repeatable per seed on the same system; Windows and Linux
+  differ (see [Known limitations](#known-limitations)).
 - **Building blocks**: Perlin fBm, ridged noise and domain warping, droplet and thermal
   erosion, priority-flood filling, flow routing and accumulation, all usable on their own.
 - **Exports**: 16-bit PNG, 16-bit RAW (Unity/Unreal), tangent-space normal map,
@@ -122,7 +123,7 @@ world = pipeline.run(world, start="rivers")
   0; everything else keeps its exact value. `Rivers(carve=False)` leaves heights alone.
 - `save_recipe` / `load_recipe` store the settings and steps (not the layers). Custom
   steps need to be dataclasses. The CLI writes `recipe.json` next to its output, and
-  `terrasylva run recipe.json -o out/` reproduces it.
+  `terrasylva run recipe.json -o out/` reproduces it on the same system.
 
 ## World size
 
@@ -335,6 +336,14 @@ produce the stripes. Carving leaves lake beds untouched.
   `land=`, that also recomputes the sea level; pass `level=` to keep it.
 - Looping worlds without an ocean still drain to a single low point, so one basin looks dry.
 - The same seed at a different size gives similar terrain but different lakes.
+- The same seed and settings give the same world on the same computer with the same
+  versions of terrasylva, NumPy and Numba, but Windows and Linux don't match. Some 32-bit
+  maths rounds differently, by about 1e-7, and erosion and rivers amplify it. Between
+  Windows and Ubuntu on one PC (256×256, two seeds, with and without `wrap`), heights
+  (0 to 1) differed by up to 0.034 with the default pipeline and 0.22 with the classic one,
+  and up to 1.3% and 7.2% of cells changed biome. A recipe therefore doesn't reproduce a
+  world exactly on another system. macOS, other processors and future library versions
+  haven't been compared.
 - Masked erosion is blended, so it doesn't conserve mass.
 - Droplets are simulated sequentially (for determinism), so erosion doesn't scale
   across cores.
@@ -394,6 +403,10 @@ checks shifted worlds against shifted results, colder air at altitude, rain shad
 reverse with the wind, rain conserved along the drainage, weights and splat sums, custom and
 incomplete biome tables, recipe round trips, worlds with no ocean, only ocean and flat
 ground, and the CLI output files.
+
+On Windows, two 64×64 worlds are also compared with stored hashes, so that a change to
+the output doesn't go unnoticed. After an intended change, or a NumPy or Numba update
+that changes them, `python tests/test_layer_hashes.py` prints the new ones.
 
 ## License
 

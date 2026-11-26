@@ -80,7 +80,8 @@ _KNOWN = {
 }
 
 WORLD = (
-    Param("seed", "Seed", "int", 0, 999_999, help="The same seed always gives the same world"),
+    Param("seed", "Seed", "int", 0, 999_999,
+          help="Repeatable per seed on the same system; Windows and Linux differ"),
     Param("wrap", "Loop both ways", "bool", help="Leaving one side brings you back on the other"),
     Param("extent", "World size (regions)", "int", 1, 8,
           help="How many regions fit across. Raise Resolution too, to keep the detail"),

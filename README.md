@@ -1,5 +1,7 @@
 # terrasylva
 
+[![tests](https://github.com/Antonetti-Lucas/terrasylva/actions/workflows/tests.yml/badge.svg?branch=main)](https://github.com/Antonetti-Lucas/terrasylva/actions/workflows/tests.yml)
+
 Procedural worlds in Python, from a command line, a desktop editor or your own code:
 continents and oceans, mountain ranges carved by rivers, climate and biomes. Worlds are
 finite, can loop in both directions, and export to files game engines can read.
@@ -342,8 +344,9 @@ produce the stripes. Carving leaves lake beds untouched.
   Windows and Ubuntu on one PC (256×256, two seeds, with and without `wrap`), heights
   (0 to 1) differed by up to 0.034 with the default pipeline and 0.22 with the classic one,
   and up to 1.3% and 7.2% of cells changed biome. A recipe therefore doesn't reproduce a
-  world exactly on another system. macOS, other processors and future library versions
-  haven't been compared.
+  world exactly on another system. On each of the two, 64×64 worlds were identical across
+  the Intel and AMD processors tried. macOS, ARM and future library versions haven't been
+  compared.
 - Masked erosion is blended, so it doesn't conserve mass.
 - Droplets are simulated sequentially (for determinism), so erosion doesn't scale
   across cores.
@@ -386,7 +389,8 @@ produce the stripes. Carving leaves lake beds untouched.
 - [x] Visual editor (desktop, PySide6): sliders, 3D preview, step list, save, load, export
 - [ ] Documented file formats and a minimal Godot import example
 - [ ] Basic object placement (points for your own assets)
-- [ ] Faster generation, automatic tests
+- [x] Automatic tests on Windows and Linux
+- [ ] Faster generation
 
 This package makes one complete map at a time, and that stays free under the MIT license.
 Work on walkable open worlds and hand editing happens in a separate project.

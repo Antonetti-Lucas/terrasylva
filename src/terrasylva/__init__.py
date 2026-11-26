@@ -27,4 +27,4 @@ __all__ = [
     "save_png16", "load_png16", "save_raw16", "save_obj",
     "water_map", "save_water_map", "normal_map", "save_normal_map",
 ]
-__version__ = "0.1.0"
+__version__ = "0.2.0"

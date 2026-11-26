@@ -9,7 +9,8 @@ finite, can loop in both directions, and export to files game engines can read.
 ![Three generated world maps](docs/worldmap.png)
 *The editor's "World map" preset, seeds 1, 5 and 9, at 768×768.*
 
-The project is young (0.1): no engine import has been tested yet, and the API may change.
+The project is young (0.2): no engine import has been tested yet, and the API may change.
+It is source-available under PolyForm Shield 1.0.0; see [License](#license).
 
 ## Features
 
@@ -396,8 +397,9 @@ produce the stripes. Carving leaves lake beds untouched.
 - [x] Automatic tests on Windows and Linux
 - [ ] Faster generation
 
-This package makes one complete map at a time, and that stays free under the MIT license.
-Work on walkable open worlds and hand editing happens in a separate project.
+This package makes one complete map at a time, and that stays free of charge under the
+terms in [License](#license). Work on walkable open worlds and hand editing happens in a
+separate project.
 
 ## Tests
 
@@ -418,4 +420,18 @@ that changes them, `python tests/test_layer_hashes.py` prints the new ones.
 
 ## License
 
-MIT
+terrasylva is source-available under the [PolyForm Shield License 1.0.0](LICENSE). In
+plain words:
+
+- You are free to read, change and use it, including in games and commercial games.
+- You are not allowed to make a competing product: one that competes with terrasylva, or
+  with a product that its author or the author's affiliates provide using it. This applies
+  even if yours is free of charge.
+- If you pass on any part of it, include the licence or its URL, and the
+  `Required Notice:` line at the top of [LICENSE](LICENSE).
+
+Versions up to the
+[`last-mit`](https://github.com/Antonetti-Lucas/terrasylva/tree/last-mit) tag remain under
+the MIT License.
+
+This is only a summary. The terms in [LICENSE](LICENSE) are what apply.

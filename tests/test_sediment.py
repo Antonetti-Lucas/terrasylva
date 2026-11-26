@@ -115,6 +115,78 @@ def test_valley_floors_make_more_flat_ground():
     assert flat(3.0) > 1.15 * flat(0.0)
 
 
+@pytest.fixture(scope="module")
+def carved():
+    """World just after Fluvial, with and without valley floors."""
+    run = lambda v: ts.Pipeline([*BASE, ts.Fluvial(steps=25, valleys=v, deltas=0)]).run(
+        ts.World(size=256, seed=3, wrap=True))
+    return run(2.0), run(0.0)
+
+
+def test_valley_floors_layer_covers_the_floors_and_fades_out(carved):
+    w, plain = carved
+    v = w["valley_floors"]
+    assert v.dtype == np.float32 and v.min() == 0 and v.max() == 1
+    raised = w["height"] > plain["height"]
+    assert raised.sum() > 0.02 * raised.size and (v[raised] == 1).all()
+    floor = v == 1
+    # the fade: cells next to a floor are still mostly spared, cells farther away not at all
+    near = np.zeros_like(floor)
+    for dy in (-1, 0, 1):
+        for dx in (-1, 0, 1):
+            near |= np.roll(np.roll(floor, dy, 0), dx, 1)
+    edge = near & ~floor
+    assert edge.any() and (v[edge] >= 0.5).all()
+    reach = floor.copy()
+    for _ in range(3):
+        reach = reach | np.roll(reach, 1, 0) | np.roll(reach, -1, 0)
+        reach = reach | np.roll(reach, 1, 1) | np.roll(reach, -1, 1)
+    assert (v[~reach] == 0).all() and ((v > 0) & (v < 1) & ~edge).any()
+    # no floors: all zero, also when an earlier run left a layer behind
+    assert not plain["valley_floors"].any()
+    again = ts.Pipeline([ts.Fluvial(steps=25, valleys=0.0, deltas=0)]).run(w)
+    assert not again["valley_floors"].any()
+
+
+def test_hydraulic_spares_the_floors(carved):
+    w, _ = carved
+    v = w["valley_floors"]
+    run = lambda **kw: ts.Pipeline([ts.Hydraulic(capacity=0.5, **kw)]).run(w)["height"]
+    before, free, spared = w["height"], run(), run(spare_floors=True)
+    land = ~w["ocean"]
+    assert not np.array_equal(free[land & (v == 1)], before[land & (v == 1)])
+    assert np.array_equal(spared[v == 1], before[v == 1])
+    assert np.array_equal(spared[v == 0], free[v == 0])
+    part = land & (v > 0) & (v < 1) & (free != before)
+    assert part.any()
+    expect = before[part] + (1 - v[part]) * (free[part] - before[part])
+    assert np.allclose(spared[part], expect, atol=1e-6)
+    # it combines with a mask, and does nothing without the layer
+    w2 = ts.Pipeline([lambda x: x.__setitem__("half", np.full(v.shape, 0.5, np.float32))]).run(w)
+    both = ts.Pipeline([ts.Hydraulic(capacity=0.5, mask="half", spare_floors=True)]).run(w2)["height"]
+    assert np.array_equal(both[v == 1], before[v == 1])
+    assert np.allclose(both[part], before[part] + 0.5 * (1 - v[part]) * (free[part] - before[part]),
+                       atol=1e-6)
+    bare = ts.World(size=64, seed=1, wrap=True)
+    bare = ts.Pipeline([ts.Noise()]).run(bare)
+    hyd = lambda s: ts.Pipeline([ts.Hydraulic(spare_floors=s)]).run(bare)["height"]
+    assert np.array_equal(hyd(True), hyd(False))
+
+
+def test_default_pipeline_spares_floors_and_recipes_can_turn_it_off(tmp_path):
+    from terrasylva.editor import params
+    hyd = [s for s in ts.default_pipeline().steps if isinstance(s, ts.Hydraulic)]
+    assert hyd and all(s.spare_floors for s in hyd)
+    assert not any(getattr(s, "spare_floors", False) for s in ts.classic_pipeline().steps)
+    assert not ts.Hydraulic().spare_floors          # old recipes keep their result
+    found = {p.field: p for p in params.params_for(ts.Hydraulic())}
+    assert found["spare_floors"].kind == "bool"
+    path = str(tmp_path / "r.json")
+    for value in (True, False):
+        ts.save_recipe(path, ts.World(size=64), ts.Pipeline([ts.Hydraulic(spare_floors=value)]))
+        assert ts.load_recipe(path)[1].steps[0].spare_floors is value
+
+
 # ----------------------------------------------------------------- deltas
 def test_delta_builds_connected_land_of_the_right_size():
     h = np.full((64, 64), 0.6)

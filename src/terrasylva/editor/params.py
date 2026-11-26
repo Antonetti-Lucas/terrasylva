@@ -52,6 +52,8 @@ _KNOWN = {
     ("Basins", "width"): ("Width", 0.01, 0.15, "", False, 0),
     ("Rivers", "evaporation"): ("Evaporation", 1, 60, "Higher gives smaller lakes in basins", False, 0),
     ("Hydraulic", "capacity"): ("Strength", 0.2, 8, "About 0.5 adds detail; 4 carves deeply but looks grainy", False, 0),
+    ("Hydraulic", "spare_floors"): ("Spare valley floors", 0, 1,
+                                    "Keeps it off the flat floors Fluvial makes, so rivers on them join", False, 0),
     ("Thermal", "iterations"): ("Amount", 0, 80, "Softens cliffs by letting material slide", True, 0),
     ("Thermal", "talus"): ("Stable slope", 0.1, 2, "Steepness that stays in place", False, 0),
     ("Hydraulic", "drops"): ("Raindrops", 0, 2_000_000, "More drops carve deeper. Automatic: 0.3 per cell", True, 300_000),

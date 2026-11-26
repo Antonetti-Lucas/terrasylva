@@ -25,6 +25,8 @@ if TYPE_CHECKING:  # world.py imports this module, so only import it for type ch
 
 # coarsest grid the simulation starts from
 _COARSEST = 96
+# cells over which the valley_floors layer fades out beyond the floors
+_FLOOR_FADE = 3.0
 
 
 def _smoothstep(x: np.ndarray) -> np.ndarray:
@@ -342,7 +344,9 @@ class Fluvial:
 
     Sediment: ``deposition`` builds plains below mountains, ``valleys`` gives rivers
     flat floors that widen downstream, and ``deltas`` extends the coast at river
-    mouths (which updates ``ocean``). 0 turns each off. A ``basin`` layer (see
+    mouths (which updates ``ocean``). 0 turns each off. The float layer
+    ``valley_floors`` is 1 on the floors and fades to 0 over a few cells around them
+    (all 0 without floors); ``Hydraulic(spare_floors=True)`` leaves them alone. A ``basin`` layer (see
     :class:`Basins`) becomes dry land below the sea, and its lowest parts the
     bool layer ``sinks``, where water ends.
     """
@@ -384,6 +388,8 @@ class Fluvial:
                          steps=self.steps, concavity=self.concavity, smoothing=self.smoothing,
                          hardness=hard, wrap=world.wrap)
         land = np.ones((n, n), dtype=bool) if ocean is None else ~ocean
+        # replaced by _sediment when there are floors; never left over from an earlier run
+        world["valley_floors"] = np.zeros((n, n), dtype=np.float32)
         if not land.any():
             return
         # the few highest cells must not flatten everything else
@@ -455,11 +461,16 @@ class Fluvial:
             room = np.maximum(blur @ surface @ blur.T - surface, 0.0)
             # basins below the sea must not silt up
             room = np.where(h < sea, 0.0, room).ravel()
-            new, _ = _valley_floors(np.ascontiguousarray(surface), recv, order, share,
-                                    np.ascontiguousarray(room), 4e-4,
+            new, floor = _valley_floors(np.ascontiguousarray(surface), recv, order, share,
+                                        np.ascontiguousarray(room), 4e-4,
                                        0.16 * self.valleys * unit, 0.03 / world.relief,
                                        0.0008 / world.relief)
             h = np.where(out, h, new)
+            if floor.any():
+                # 1 on the floors, fading to 0 over a few cells, so whatever spares them
+                # doesn't leave a seam
+                near = _distance(floor & ~out, bool(world.wrap)) / _FLOOR_FADE
+                world["valley_floors"] = np.clip(1.0 - near, 0.0, 1.0).astype(np.float32)
         if self.deltas > 0 and ocean is not None and ocean.any():
             down = np.where(recv >= 0, recv, 0)
             mouth = (recv >= 0) & ocean.ravel()[down] & ~ocean.ravel() & (share > 8e-3)

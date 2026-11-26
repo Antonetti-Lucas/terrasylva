@@ -105,8 +105,11 @@ class World:
         return lo + self["height"] * (hi - lo)
 
 
-def _blend(world: World, new: np.ndarray, mask: str | None) -> None:
-    """Store eroded heights, limited by a mask and by an existing coast."""
+def _blend(world: World, new: np.ndarray, mask: str | None, spare: str | None = None) -> None:
+    """Store eroded heights, limited by a mask and by an existing coast.
+
+    ``spare`` names a [0, 1] layer where the change is held back instead (1: none at all).
+    """
     old = world["height"]
     ocean = world.layers.get("ocean")
     if ocean is not None and world.sea_level is not None:
@@ -114,8 +117,11 @@ def _blend(world: World, new: np.ndarray, mask: str | None) -> None:
         # and other land may wear down to the sea but not below
         floor = np.minimum(old, np.nextafter(np.float32(world.sea_level), np.float32(2.0)))
         new = np.where(ocean | (old < np.float32(world.sea_level)), old, np.maximum(new, floor))
-    if mask is not None:
-        m = np.clip(world[mask].astype(np.float32), 0.0, 1.0)
+    m = None if mask is None else np.clip(world[mask].astype(np.float32), 0.0, 1.0)
+    if spare is not None and spare in world:
+        keep = np.float32(1.0) - np.clip(world[spare].astype(np.float32), 0.0, 1.0)
+        m = keep if m is None else m * keep
+    if m is not None:
         # exact where m is 0, so protected cells keep their value bit for bit
         new = np.where(m > 0, old + m * (new - old), old)
     world["height"] = new.astype(np.float32)
@@ -220,18 +226,25 @@ class Hydraulic:
     the sea floor is left alone and whatever reaches it is lost. ``capacity`` is
     how much sediment water can carry: 4 carves deeply but leaves a grainy
     surface, about 0.5 only adds fine detail.
+
+    ``spare_floors`` leaves the valley floors of :class:`Fluvial` (the ``valley_floors``
+    layer) as they are, fading in over a few cells at their edges. Droplets would
+    otherwise cut straight, parallel grooves into them, which rivers then follow side
+    by side instead of joining.
     """
 
     drops: int | None = None
     capacity: float = 4.0
     mask: str | None = None
+    spare_floors: bool = False
     name: str = "hydraulic"
 
     def __call__(self, world: World) -> None:
         drops = int(0.3 * world.size ** 2) if self.drops is None else self.drops
         _blend(world, hydraulic_erosion(world["height"], drops=drops, capacity=self.capacity,
                                         seed=world.seed_for(self.name),
-                                        relief=world.relief, wrap=world.wrap), self.mask)
+                                        relief=world.relief, wrap=world.wrap), self.mask,
+               "valley_floors" if self.spare_floors else None)
 
 
 @dataclass(frozen=True)
@@ -339,7 +352,7 @@ STEPS: dict[str, type] = {c.__name__: c for c in (Noise, Continents, Ranges, The
 def default_pipeline() -> Pipeline:
     """Continents and mountain ranges carved by rivers, with climate and biomes."""
     return Pipeline([Noise(), Continents(), Ranges(), Ocean(), SeaFloor(), Basins(), Fluvial(),
-                     Hydraulic(capacity=0.5), Climate(), Rivers(carve=False), Biomes()])
+                     Hydraulic(capacity=0.5, spare_floors=True), Climate(), Rivers(carve=False), Biomes()])
 
 
 def classic_pipeline() -> Pipeline:

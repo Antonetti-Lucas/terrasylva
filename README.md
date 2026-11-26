@@ -193,6 +193,10 @@ Middle: the same map. Right: a closed basin, with rivers ending in its lake.*
 
 - **Plains and valley floors**: `Fluvial(deposition=)` lets debris from fast-rising mountains
   build up the land below them, and `valleys=` fills valley bottoms, wider downstream.
+  `Fluvial` marks them in the `valley_floors` layer, and `Hydraulic(spare_floors=True)` (as in
+  `default_pipeline()`) leaves them alone, fading in over three cells. Otherwise droplets cut
+  parallel grooves into the floors and rivers follow them side by side instead of joining. The
+  editor's *Spare valley floors* box turns it off.
 - **Deltas**: `deltas=` extends the coast at the mouths of large rivers, updating `ocean`.
 - **Sea floor**: `SeaFloor` makes a shallow shelf, a slope and an abyssal plain.
 - **Land below the sea**: `Basins` places closed depressions far inland, as deep as `depth`
